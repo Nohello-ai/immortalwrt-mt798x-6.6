@@ -124,7 +124,9 @@ mediatek_setup_interfaces()
 	openembed,som7981|\
 	openwrt,one|\
 	openfi,6c*)
-		ucidef_set_interfaces_lan_wan "eth1" eth0
+		# 实体口是 LAN（gmac1），WAN 是 USB 模组的 RNDIS 网口 usb0；
+		# 不能沿用 eth0 —— 那是 gmac0 桩口，没有 PHY。
+		ucidef_set_interfaces_lan_wan "eth1" "usb0"
 		;;
 	dlink,aquila-pro-ai-m30-a1|\
 	dlink,aquila-pro-ai-m60-a1)
