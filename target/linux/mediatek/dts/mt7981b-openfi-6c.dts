@@ -257,8 +257,14 @@
 	status = "okay";
 };
 
-/* 注：&hnat 的覆盖（LAN/PPD/WAN 绑定）等"USB 模组当 WAN"那步再定，
- * 底座 dtsi 里已有 hnat 节点，且自带 ext-devices-prefix = "usb","wwan","rmnet",... */
+/* HNAT 绑定：本板 WAN 是 USB 模组（usb0），实体口固定为 LAN。
+ * dtsi 的默认值是 wan=eth1 / lan=eth0，与实际拓扑相反，必须覆盖。
+ * WAN 侧交给 ext-devices-prefix（含 "usb"）自动认，所以写 "/"。 */
+&hnat {
+	mtketh-lan = "eth1";
+	mtketh-ppd = "eth1";
+	mtketh-wan = "/";
+};
 
 &pwm {
 	pinctrl-names = "default";
