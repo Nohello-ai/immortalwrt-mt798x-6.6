@@ -43,7 +43,7 @@ jobs:
       - name: 生成版本号（按时间）
         id: ver
         run: |
-          TAG="v25.12-openfi6c-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
+          TAG="v24.10-openfi6c-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "版本号: $TAG"
 
