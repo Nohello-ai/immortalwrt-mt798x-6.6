@@ -1,0 +1,124 @@
+#!/bin/sh
+#
+# OpenFi 6C —— 5G 模块信息查询（只读）
+#
+# 只发查询类指令：ATI / AT+CGMM / AT+CGSN / AT+xxx? ……
+# 一条写指令都不发，所以查询本身不会动模块当前的驻网和数据连接。
+#
+# 输出：一行 JSON，给 LuCI「移动网络」页面（view/openfi/modem.js）读取。
+# 任何一步失败都输出空字段并 exit 0，绝不让页面报错白屏。
+#
+# 用法：
+#   openfi-modem-info          打印 JSON
+#   openfi-modem-info --raw    打印 AT 口 + 模块原始回显（排障用）
+
+. /usr/lib/openfi-modem/at.sh
+
+RAW=""
+
+# ------------------------------------------------------------ 一次发完的查询
+run_query() {
+	omod_query \
+		ATI \
+		AT+CGMI \
+		AT+CGMM \
+		AT+CGMR \
+		AT+CGSN \
+		'AT+CPIN?' \
+		AT+CSQ \
+		AT+CESQ \
+		AT+QRSRP \
+		'AT+COPS?' \
+		AT+QNWINFO \
+		'AT+QUIMSLOT?' \
+		'AT+QUIMSLOT=?' \
+		AT+QTEMP
+}
+
+# 某条指令响应里的第一行非空内容（依赖模块回显）
+sec1() {
+	omod_sec "$1" "$2" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' | head -1
+}
+
+# ------------------------------------------------------------ 采集
+if omod_open; then
+	RAW="$(run_query)"
+	omod_close
+fi
+
+if [ "$1" = "--raw" ]; then
+	printf 'AT_PORT=%s\nAT_ERR=%s\n--- raw ---\n%s\n' "$AT_PORT" "$AT_ERR" "$RAW"
+	exit 0
+fi
+
+# ------------------------------------------------------------ 解析
+MODEL="$(sec1 "$RAW" 'AT+CGMM')"
+MANUF="$(sec1 "$RAW" 'AT+CGMI')"
+REV="$(sec1 "$RAW" 'AT+CGMR')"
+IMEI="$(omod_sec "$RAW" 'AT+CGSN' | tr -d '\r' | grep -E '^[0-9]{15}$' | head -1)"
+
+# 回显被关掉时上面的分段解析会全空，用整段正则兜底
+[ -z "$MODEL" ] && MODEL="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -oE '[A-Z]{2}[0-9]{3,4}[A-Z]?-[A-Z]{2}' | head -1)"
+[ -z "$MANUF" ] && MANUF="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -ioE 'quectel|fibocom|simcom|meig|unisoc|mediatek|longsung|neoway' | head -1)"
+[ -z "$REV" ] && REV="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -iE '^[[:space:]]*revision' | head -1 | sed 's/.*[Rr]evision[[:space:]]*:[[:space:]]*//')"
+[ -z "$IMEI" ] && IMEI="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -E '^[0-9]{15}$' | head -1)"
+
+SIM_STATUS="$(omod_after_colon "$(omod_line "$RAW" '+CPIN:')")"
+[ -z "$SIM_STATUS" ] && SIM_STATUS="$(omod_sec "$RAW" 'AT+CPIN?' | sed -e '/^$/d' | head -1)"
+
+# 当前卡槽 / 支持的卡槽
+SLOT_LINE="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -E '\+(QUIMSLOT|QUSIMSLOT):' | grep -v -F '(' | head -1)"
+SLOTS_LINE="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -E '\+(QUIMSLOT|QUSIMSLOT):' | grep -F '(' | head -1)"
+SIM_SLOT="$(omod_after_colon "$SLOT_LINE" | tr -dc '0-9')"
+SIM_SLOTS="$(printf '%s' "$SLOTS_LINE" | sed 's/.*(//; s/).*//' | tr -dc '0-9,')"
+
+# 信号
+CSQ="$(omod_after_colon "$(omod_line "$RAW" '+CSQ:')" | cut -d, -f1 | tr -dc '0-9')"
+DBM=""
+case "$CSQ" in
+	''|99) DBM="" ;;
+	*) DBM="$(( -113 + 2 * CSQ ))" ;;
+esac
+
+# 首选移远的 +QRSRP（5G 下才准），没有就退回 +CESQ 第 6 个字段
+RSRP="$(omod_first_int "$(omod_after_colon "$(omod_line "$RAW" '+QRSRP:')")")"
+if [ -z "$RSRP" ]; then
+	CESQ6="$(omod_after_colon "$(omod_line "$RAW" '+CESQ:')" | cut -d, -f6 | tr -dc '0-9-')"
+	case "$CESQ6" in
+		''|*-) : ;;
+		*) RSRP="$(( CESQ6 - 140 ))" ;;
+	esac
+fi
+
+# 网络制式 / 运营商
+NETWORK="$(printf '%s' "$(omod_line "$RAW" '+QNWINFO:')" | cut -d'"' -f2)"
+OPERATOR="$(printf '%s' "$(omod_line "$RAW" '+COPS:')" | cut -d'"' -f2)"
+
+# 模块温度：+QTEMP 第一个数字就是 modem 温度
+TEMPERATURE="$(omod_first_int "$(omod_after_colon "$(omod_line "$RAW" '+QTEMP:')")")"
+
+# ------------------------------------------------------------ 输出
+SLOTS_JSON='[]'
+if [ -n "$SIM_SLOTS" ]; then
+	SLOTS_JSON="[$(printf '%s' "$SIM_SLOTS" | awk -F, '{for(i=1;i<=NF;i++){if($i=="")continue; printf "%s\"%s\"", (n++?",":""), $i}}')]"
+fi
+
+cat <<EOF
+{
+  "at_port": "$(omod_json_escape "$AT_PORT")",
+  "error": "$(omod_json_escape "$AT_ERR")",
+  "model": "$(omod_json_escape "$MODEL")",
+  "manufacturer": "$(omod_json_escape "$MANUF")",
+  "revision": "$(omod_json_escape "$REV")",
+  "imei": "$(omod_json_escape "$IMEI")",
+  "sim_status": "$(omod_json_escape "$SIM_STATUS")",
+  "sim_slot": "$(omod_json_escape "$SIM_SLOT")",
+  "sim_slots": $SLOTS_JSON,
+  "operator": "$(omod_json_escape "$OPERATOR")",
+  "network": "$(omod_json_escape "$NETWORK")",
+  "csq": "$(omod_json_escape "$CSQ")",
+  "dbm": "$(omod_json_escape "$DBM")",
+  "rsrp": "$(omod_json_escape "$RSRP")",
+  "temperature": "$(omod_json_escape "$TEMPERATURE")"
+}
+EOF
