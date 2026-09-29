@@ -1,0 +1,107 @@
+#!/bin/sh
+#
+# OpenFi 6C —— SIM 卡槽切换 / 模块软重启
+#
+# 用法：
+#   openfi-modem-switch 1|2     切到指定卡槽（AT+QUIMSLOT=n）
+#   openfi-modem-switch restart 软重启模块（AT+CFUN=1,1）
+#
+# 输出一行 JSON：
+#   {"ok":true,"slot":"2","error":"","response":"OK"}
+#
+# 说明：
+#   * 本机是「双卡单待」，AT+QUIMSLOT 只是改模块内部的物理卡槽选择。
+#     改完模块要重新搜网，移动网络会断几十秒，这是正常现象。
+#   * 不发 AT&W，也不改模块的 USB 模式，重启不会丢模块设置。
+#   * 切完是否自动软重启由 uci openfi_modem.switch.restart_after_switch 控制，
+#     默认关；页面上有单独的「软重启模块」按钮。
+
+. /usr/lib/openfi-modem/at.sh
+
+ACTION="$1"
+
+OUT_OK=0
+OUT_SLOT=""
+OUT_ERR=""
+OUT_RESP=""
+
+emit() {
+	cat <<EOF
+{"ok":$( [ "$OUT_OK" = "1" ] && echo true || echo false ),"slot":"$(omod_json_escape "$OUT_SLOT")","error":"$(omod_json_escape "$OUT_ERR")","response":"$(omod_json_escape "$OUT_RESP")"}
+EOF
+}
+
+cur_slot() {
+	omod_write 'AT+QUIMSLOT?'
+	omod_read | tr -d '\r' \
+		| grep -E '\+(QUIMSLOT|QUSIMSLOT):' \
+		| grep -v -F '(' \
+		| head -1 \
+		| sed 's/.*:[[:space:]]*//' \
+		| tr -dc '0-9'
+}
+
+case "$ACTION" in
+1|2)
+	if ! omod_open; then
+		OUT_ERR="${AT_ERR:-open_failed}"
+		emit
+		exit 0
+	fi
+
+	omod_write "AT+QUIMSLOT=$ACTION"
+	OUT_RESP="$(omod_read)"
+
+	if ! printf '%s\n' "$OUT_RESP" | tr -d '\r' | grep -qE '^OK'; then
+		OUT_ERR="$(printf '%s\n' "$OUT_RESP" | tr -d '\r' | grep -E 'ERROR' | head -1)"
+		[ -z "$OUT_ERR" ] && OUT_ERR="no_ok_from_modem"
+		omod_close
+		emit
+		exit 0
+	fi
+
+	# 模块不会立刻更新 AT+QUIMSLOT? 的返回值，给它几次机会
+	i=0
+	while [ "$i" -lt 5 ]; do
+		OUT_SLOT="$(cur_slot)"
+		[ "$OUT_SLOT" = "$ACTION" ] && break
+		i=$((i + 1))
+		sleep 1
+	done
+
+	if [ "$OUT_SLOT" = "$ACTION" ]; then
+		OUT_OK=1
+	else
+		OUT_ERR="slot_not_confirmed"
+	fi
+
+	if [ "$OUT_OK" = "1" ] && [ "$(omod_uci openfi_modem.switch.restart_after_switch)" = "1" ]; then
+		# 发完就走，不等回复：CFUN=1,1 之后 AT 口会重新枚举
+		omod_write 'AT+CFUN=1,1'
+		sleep 1
+	fi
+
+	omod_close
+	;;
+
+restart)
+	if ! omod_open; then
+		OUT_ERR="${AT_ERR:-open_failed}"
+		emit
+		exit 0
+	fi
+
+	omod_write 'AT+CFUN=1,1'
+	sleep 1
+	omod_close
+
+	OUT_OK=1
+	OUT_RESP="AT+CFUN=1,1"
+	;;
+
+*)
+	OUT_ERR="invalid_action"
+	;;
+esac
+
+emit
