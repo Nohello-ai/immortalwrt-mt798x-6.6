@@ -146,6 +146,9 @@ jobs:
 
       - name: ccache 命中统计
         if: always()
+        env:
+          # 必须显式指到这个目录，否则 ccache -s 读的是 ~/.ccache（空的），会误报 0
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           staging_dir/host/bin/ccache -s 2>/dev/null || ccache -s 2>/dev/null || echo "（首次构建，ccache 还没生成）"
           du -sh .ccache dl staging_dir 2>/dev/null || true
