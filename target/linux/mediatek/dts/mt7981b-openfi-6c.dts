@@ -202,11 +202,13 @@
 				partition@580000 {
 					label = "hw";
 					reg = <0x0580000 0x0080000>;
+					read-only;
 				};
 
 				partition@600000 {
 					label = "cfg";
 					reg = <0x0600000 0x0080000>;
+					read-only;
 				};
 
 				partition@680000 {
