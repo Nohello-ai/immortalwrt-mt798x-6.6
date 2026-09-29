@@ -44,8 +44,8 @@
 	leds {
 		compatible = "gpio-leds";
 
-		led_status_blue:led_0 {
-			function = LED_FUNCTION_STATUS;
+		led_status_blue: led_0 {
+			label = "system";
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 2 GPIO_ACTIVE_LOW>;
 		};
@@ -57,7 +57,7 @@
 		};
 
 		led_2 {
-			function = LED_FUNCTION_WLAN;
+			label = "wifi";
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
 		};
@@ -102,7 +102,9 @@
 		#cooling-cells = <2>;
 		cooling-levels = <0 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200 210 220 240 255>;
 		pwms = <&pwm 0 40000 0>;
-		status = "okay";
+		/* 两路 PWM 是反向的，由用户态 op_fan.sh 独占（直接写 pwmchip0/pwm0+pwm1），
+		 * pwm-fan 驱动不能抢，否则 op_fan.sh 的 export 会 EBUSY。 */
+		status = "disabled";
 	};
 };
 
@@ -207,7 +209,7 @@
 					reg = <0x0600000 0x0080000>;
 				};
 
-				partition@5c0000 {
+				partition@680000 {
 					label = "ubi";
 					reg = <0x680000 0xe980000>;
 				};
@@ -243,9 +245,20 @@
 	status = "okay";
 };
 
+/* 开源 mt76 用的节点：闭源驱动不碰它 */
 &wifi {
+	status = "disabled";
+};
+
+/* 联发科闭源驱动的节点（dtsi 里已定义 reg / interrupts / chip_id） */
+&wbsys {
+	/* 整块读 Factory，绕开 mt76 那个 4 KiB nvmem cell 的限制 */
+	mediatek,mtd-eeprom = <&factory 0>;
 	status = "okay";
 };
+
+/* 注：&hnat 的覆盖（LAN/PPD/WAN 绑定）等"USB 模组当 WAN"那步再定，
+ * 底座 dtsi 里已有 hnat 节点，且自带 ext-devices-prefix = "usb","wwan","rmnet",... */
 
 &pwm {
 	pinctrl-names = "default";
