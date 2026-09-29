@@ -1,0 +1,13 @@
+config modem 'modem'
+	# 留空 = 自动探测（先用 sysfs 里的 "…AT Port" 接口名，再按 ttyUSB3..0 顺序试）
+	option at_port ''
+	option baud '115200'
+
+config switch 'switch'
+	# 切卡后是否自动软重启模块（AT+CFUN=1,1）。
+	# 部分固件/模组切完卡要重启才会真正驻网，默认关，页面上有单独按钮。
+	option restart_after_switch '0'
+
+config view 'view'
+	# 页面自动刷新间隔（秒）
+	option poll '15'
