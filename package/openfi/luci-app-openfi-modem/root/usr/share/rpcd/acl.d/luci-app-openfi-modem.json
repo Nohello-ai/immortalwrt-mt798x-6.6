@@ -1,0 +1,19 @@
+{
+	"luci-app-openfi-modem": {
+		"description": "Grant access to OpenFi 6C modem information and SIM slot switching",
+
+		"read": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"uci": [ "openfi_modem" ]
+		},
+
+		"write": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"uci": [ "openfi_modem" ]
+		}
+	}
+}
