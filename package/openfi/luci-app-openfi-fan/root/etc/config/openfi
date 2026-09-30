@@ -20,3 +20,12 @@ config fan 'fan'
 	option speed2 '36'
 	option speed3 '68'
 	option speed4 '100'
+
+config led 'led'
+	# 灯光总开关：0 = 四盏灯全灭（夜间模式）
+	option enabled '1'
+	# 每盏灯：on 常亮 / off 常灭 / keep 不干预（交回内核或其它程序）
+	option system 'on'
+	option internet 'on'
+	option wifi 'on'
+	option modem 'on'
