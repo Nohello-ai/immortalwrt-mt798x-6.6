@@ -1,0 +1,119 @@
+#!/bin/sh
+#
+# OpenFi 6C —— 信号历史（采样 / 查询 / 清空 / 常驻采样）
+#
+#   openfi-modem-signal sample    采一个样本
+#   openfi-modem-signal           输出 JSON（环缓冲里的全部样本）
+#   openfi-modem-signal clear     清空
+#   openfi-modem-signal daemon    常驻采样（由 /etc/init.d/openfi-signal 拉起）
+#
+# 存储：/tmp/openfi-signal.log —— /tmp 是 tmpfs，**不写 flash**（互斥写会折寿）。
+# 代价是重启后历史清空，这对「看最近几小时信号」够用。
+# 每行：epoch|csq|dbm|rsrp|network
+# 环缓冲：只保留最后 keep 条（uci openfi_modem.signal.keep，默认 288 = 60 秒采样下的 4.8 小时）
+#
+. /usr/lib/openfi-modem/at.sh
+
+LOGFILE=${OPENFI_SIGNAL_LOG:-/tmp/openfi-signal.log}
+
+cfg_int() {
+	v=$(uci -q get "openfi_modem.signal.$1" 2>/dev/null)
+	case "$v" in ''|*[!0-9]*) echo "$2" ;; *) echo "$v" ;; esac
+}
+
+get_interval() { cfg_int interval 60; }
+get_keep()     { cfg_int keep 288; }
+
+enabled() {
+	v=$(uci -q get openfi_modem.signal.enabled 2>/dev/null)
+	case "$v" in 0) return 1 ;; *) return 0 ;; esac
+}
+
+# 取某条指令响应里的第一行非空内容
+sec1() {
+	omod_sec "$1" "$2" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' | head -1
+}
+
+do_sample() {
+	[ -n "$LOGFILE" ] || return 1
+
+	if ! omod_open; then
+		return 1
+	fi
+
+	# 只发三条最轻的：一条 CSQ、一条 RSRP、一条制式
+	raw="$(omod_query AT+CSQ AT+QRSRP AT+QNWINFO)"
+	omod_close
+
+	csq="$(omod_after_colon "$(omod_line "$raw" '+CSQ:')" | cut -d, -f1 | tr -dc '0-9')"
+	case "$csq" in 99) csq="" ;; esac
+
+	dbm=""
+	[ -n "$csq" ] && dbm="$(( -113 + 2 * csq ))"
+
+	rsrp="$(omod_first_int "$(omod_after_colon "$(omod_line "$raw" '+QRSRP:')")")"
+
+	net="$(printf '%s' "$(omod_line "$raw" '+QNWINFO:')" | cut -d'"' -f2 | tr -d '"\\|')"
+
+	printf '%s|%s|%s|%s|%s\n' "$(date +%s)" "$csq" "$dbm" "$rsrp" "$net" >> "$LOGFILE"
+
+	# 环缓冲：超了就裁掉最老的
+	keep="$(get_keep)"
+	lines="$(wc -l < "$LOGFILE" 2>/dev/null)"
+	case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+
+	if [ "$lines" -gt "$keep" ]; then
+		tail -n "$keep" "$LOGFILE" > "$LOGFILE.tmp" 2>/dev/null && mv "$LOGFILE.tmp" "$LOGFILE"
+	fi
+
+	return 0
+}
+
+do_query() {
+	count=0
+	[ -f "$LOGFILE" ] && count="$(wc -l < "$LOGFILE" 2>/dev/null)"
+	case "$count" in ''|*[!0-9]*) count=0 ;; esac
+
+	printf '{"interval":%s,"keep":%s,"count":%s,"file":"%s","samples":[' \
+		"$(get_interval)" "$(get_keep)" "$count" "$(omod_json_escape "$LOGFILE")"
+
+	if [ -f "$LOGFILE" ]; then
+		awk -F'|' '
+			NF >= 4 {
+				t  = ($1 ~ /^[0-9]+$/) ? $1 : "null"
+				c  = ($2 ~ /^[0-9]+$/) ? $2 : "null"
+				d  = ($3 ~ /^-?[0-9]+$/) ? $3 : "null"
+				r  = ($4 ~ /^-?[0-9]+$/) ? $4 : "null"
+				printf "%s{\"t\":%s,\"csq\":%s,\"dbm\":%s,\"rsrp\":%s,\"network\":\"%s\"}",
+					(n++ ? "," : ""), t, c, d, r, $5
+			}
+		' "$LOGFILE"
+	fi
+
+	printf ']}\n'
+}
+
+do_daemon() {
+	reload=0
+	trap 'reload=1' HUP
+	trap 'exit 0' INT TERM
+
+	while :; do
+		reload=0
+
+		if enabled; then
+			do_sample || logger -t openfi-signal "采样失败（AT 口不可用？）"
+		fi
+
+		# HUP 会打断 sleep，下一轮用新的 interval
+		sleep "$(get_interval)"
+	done
+}
+
+case "${1:-}" in
+	sample) do_sample; exit $? ;;
+	clear)  : > "$LOGFILE"; exit 0 ;;
+	daemon) do_daemon ;;
+	'')     do_query ;;
+	*)      echo "用法: openfi-modem-signal [sample|clear|daemon]" >&2; exit 1 ;;
+esac
