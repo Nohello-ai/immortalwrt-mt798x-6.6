@@ -75,6 +75,7 @@ return view.extend({
 
 		this.tbody   = E('tbody');
 		this.slotBox = E('div');
+		this.cellBox = E('div');
 
 		var node = E('div', {}, [
 			E('h2', {}, _('移动网络')),
@@ -84,6 +85,13 @@ return view.extend({
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, _('模组信息')),
 				E('table', { 'class': 'table' }, [ this.tbody ])
+			]),
+
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, _('服务小区')),
+				E('div', { 'class': 'cbi-section-descr' },
+					_('来自 AT+QCAINFO。PCC 是主载波，SCC 是聚合的辅载波。')),
+				this.cellBox
 			]),
 
 			E('div', { 'class': 'cbi-section' }, [
@@ -107,6 +115,7 @@ return view.extend({
 		this.data = d || {};
 
 		replaceChildren(this.tbody, this.infoRows(this.data));
+		replaceChildren(this.cellBox, [ this.cellRows(this.data) ]);
 		replaceChildren(this.slotBox, this.slotControls(this.data));
 	},
 
@@ -131,6 +140,9 @@ return view.extend({
 			infoRow(_('厂商'), d.manufacturer),
 			infoRow(_('模块固件'), d.revision),
 			infoRow(_('IMEI'), d.imei),
+			infoRow(_('注册状态'), d.reg_status),
+			infoRow(_('ICCID（卡号）'), d.iccid),
+			infoRow(_('IMSI（用户标识）'), d.imsi),
 			infoRow(_('AT 串口'), d.at_port),
 			infoRow(_('SIM 状态'), d.sim_status),
 			infoRow(_('当前卡槽'), d.sim_slot ? ('SIM ' + d.sim_slot) : ''),
@@ -146,6 +158,43 @@ return view.extend({
 			rows.push(infoRow(_('错误'), d.error));
 
 		return rows;
+	},
+
+	cellRows: function(d) {
+		var cells = d.cells || [];
+
+		if (!cells.length)
+			return E('p', { 'class': 'cbi-section-descr' },
+				_('没有读到小区信息（模组可能不支持 AT+QCAINFO，或当前未驻网）。'));
+
+		function v(x, unit) {
+			return (x === null || x === undefined || x === '') ? '—' : (x + unit);
+		}
+
+		var head = E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, _('类型')),
+			E('th', { 'class': 'th' }, _('频段')),
+			E('th', { 'class': 'th' }, _('RSRP')),
+			E('th', { 'class': 'th' }, _('RSRQ')),
+			E('th', { 'class': 'th' }, _('RSSI')),
+			E('th', { 'class': 'th' }, _('SINR'))
+		]);
+
+		var rows = cells.map(function(c) {
+			return E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td left' }, dash(c.type)),
+				E('td', { 'class': 'td left' }, dash(c.band)),
+				E('td', { 'class': 'td left' }, v(c.rsrp, ' dBm')),
+				E('td', { 'class': 'td left' }, v(c.rsrq, ' dB')),
+				E('td', { 'class': 'td left' }, v(c.rssi, ' dBm')),
+				E('td', { 'class': 'td left' }, v(c.sinr, ' dB'))
+			]);
+		});
+
+		return E('table', { 'class': 'table' }, [
+			E('thead', {}, [ head ]),
+			E('tbody', {}, rows)
+		]);
 	},
 
 	slotControls: function(d) {
