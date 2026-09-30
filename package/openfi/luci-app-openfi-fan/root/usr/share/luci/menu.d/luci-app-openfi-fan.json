@@ -1,0 +1,24 @@
+{
+	"admin/fan": {
+		"title": "散热",
+		"order": 46,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-openfi-fan" ]
+		}
+	},
+
+	"admin/fan/status": {
+		"title": "风扇控制",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "openfi/fan"
+		},
+		"depends": {
+			"acl": [ "luci-app-openfi-fan" ]
+		}
+	}
+}
