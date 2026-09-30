@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# OpenFi 6C 风扇状态查询（只读）—— 给 LuCI「散热」页面用。
+#
+# 输出一行 JSON：
+#   running  守护进程在不在
+#   daemon   守护进程自己写的那份状态（/var/run/openfi-fan.json），含温度/输出/原因
+#   pwm      两路 PWM 的实况（enable / duty / period / speed%）
+#   config   当前生效的 UCI 配置（页面拿来跟表单对照）
+#
+SYSFS=${OPENFI_SYSFS:-/sys}
+RUNDIR=${OPENFI_RUNDIR:-/var/run}
+PWM="$SYSFS/class/pwm/pwmchip0"
+DAEMON_JSON="$RUNDIR/openfi-fan.json"
+PERIOD_NS=40000
+
+num() {
+	case "$1" in
+		''|*[!0-9-]*) echo null ;;
+		*) echo "$1" ;;
+	esac
+}
+
+uci_num() {
+	v=$(uci -q get "openfi.fan.$1" 2>/dev/null)
+	num "${v:-$2}"
+}
+uci_str() {
+	v=$(uci -q get "openfi.fan.$1" 2>/dev/null)
+	case "$v" in
+		''|*[!A-Za-z0-9_]*) echo "${2}" ;;
+		*) echo "$v" ;;
+	esac
+}
+
+if pgrep -f '/usr/sbin/openfi-fan$' >/dev/null 2>&1; then
+	running=true
+else
+	running=false
+fi
+
+printf '{"running":%s' "$running"
+
+if [ -r "$DAEMON_JSON" ]; then
+	printf ',"daemon":'
+	cat "$DAEMON_JSON" 2>/dev/null | tr -d '\n' || printf 'null'
+else
+	printf ',"daemon":null'
+fi
+
+printf ',"pwm":['
+first=1
+for ch in 0 1; do
+	p="$PWM/pwm$ch"
+	[ "$first" -eq 1 ] || printf ','
+	first=0
+	if [ -d "$p" ]; then
+		en=$(num "$(cat "$p/enable" 2>/dev/null)")
+		duty=$(cat "$p/duty_cycle" 2>/dev/null)
+		per=$(cat "$p/period" 2>/dev/null)
+		# 反极性：duty 0 = 全速
+		if [ -n "$duty" ] && [ -n "$per" ] && [ "$per" -gt 0 ] 2>/dev/null; then
+			speed=$((100 - (duty * 100 / per)))
+		else
+			speed=null
+		fi
+		printf '{"channel":%s,"enable":%s,"duty":%s,"period":%s,"speed":%s}' \
+			"$ch" "${en:-null}" "$(num "$duty")" "$(num "$per")" "$(num "$speed")"
+	else
+		printf '{"channel":%s,"enable":null,"duty":null,"period":null,"speed":null}' "$ch"
+	fi
+done
+printf ']'
+
+printf ',"config":{'
+printf '"mode":"%s"' "$(uci_str mode auto)"
+printf ',"period":%s' "$(uci_num period 5)"
+printf ',"min_speed":%s' "$(uci_num min_speed 5)"
+printf ',"manual_speed":%s' "$(uci_num manual_speed 55)"
+printf ',"emergency_temp":%s' "$(uci_num emergency_temp 85)"
+printf ',"fan_stop":%s' "$(uci_num fan_stop 1)"
+printf ',"temp1":%s,"temp2":%s,"temp3":%s,"temp4":%s' \
+	"$(uci_num temp1 55)" "$(uci_num temp2 58)" "$(uci_num temp3 61)" "$(uci_num temp4 65)"
+printf ',"speed1":%s,"speed2":%s,"speed3":%s,"speed4":%s' \
+	"$(uci_num speed1 5)" "$(uci_num speed2 36)" "$(uci_num speed3 68)" "$(uci_num speed4 100)"
+printf '}}'
+printf '\n'
