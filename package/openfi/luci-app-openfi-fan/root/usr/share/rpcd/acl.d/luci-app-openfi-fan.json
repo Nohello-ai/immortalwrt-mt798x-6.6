@@ -1,10 +1,14 @@
 {
 	"luci-app-openfi-fan": {
-		"description": "Grant access to OpenFi 6C fan control",
+		"description": "Grant access to OpenFi 6C fan control and status LED control",
 
 		"read": {
 			"ubus": {
 				"file": [ "exec" ]
+			},
+			"file": {
+				"/usr/sbin/openfi-fan-status": [ "exec" ],
+				"/usr/sbin/openfi-led":        [ "exec" ]
 			},
 			"uci": [ "openfi" ]
 		},
