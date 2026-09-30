@@ -9,6 +9,9 @@ STOP=12
 USE_PROCD=1
 
 start_service() {
+	# 状态灯由脚本一次性驱动，不需要常驻进程
+	/usr/sbin/openfi-led apply >/dev/null 2>&1
+
 	procd_open_instance
 	procd_set_param command /usr/sbin/openfi-fan
 	procd_set_param respawn
@@ -27,6 +30,9 @@ reload_service() {
 		# 进程不在（异常退出）→ 直接拉起来
 		start
 	fi
+
+	# 灯光设置也可能改了
+	/usr/sbin/openfi-led apply >/dev/null 2>&1
 }
 
 service_triggers() {
