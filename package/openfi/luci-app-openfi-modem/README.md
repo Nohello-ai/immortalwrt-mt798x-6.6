@@ -1,6 +1,42 @@
 # luci-app-openfi-modem
 
-OpenFi 6C 的 **独立** LuCI 插件：5G 模块信息 + SIM 卡槽切换。
+OpenFi 6C 的 **独立** LuCI 插件。顶层菜单 **移动网络**，下面三页：
+
+| 页面 | 路径 | 内容 |
+| --- | --- | --- |
+| 模组信息与卡槽 | `openfi/modem` | 型号/固件/IMEI/ICCID/IMSI/注册状态/SIM 状态/卡槽/运营商/制式/信号/温度 + **服务小区表**（AT+QCAINFO）+ 切卡 + 软重启 |
+| 信号与流量 | `openfi/signal` | **信号历史曲线**（CSQ/RSRP/RSSI 可切换，跟随主题的 SVG）+ 连接状态（IP/网关/DNS/在线时长）+ 流量统计（累计 + 页面侧算的实时速率） |
+| AT 终端 | `openfi/at` | 直接发任意 AT 指令，14 个常用指令一键发送，带黑名单保护 |
+
+## 后端脚本
+
+| 脚本 | 作用 |
+| --- | --- |
+| `usr/sbin/openfi-modem-info` | 只读查询（`ATI`/`AT+CGMM`/`AT+CGSN`/`AT+CPIN?`/`AT+CSQ`/`AT+QRSRP`/`AT+COPS?`/`AT+QNWINFO`/`AT+QTEMP`/`AT+QCCID`/`AT+CIMI`/`AT+CREG?`/`AT+CEREG?`/`AT+QCAINFO`/`AT+QUIMSLOT?`），输出一行 JSON |
+| `usr/sbin/openfi-modem-switch` | 切卡 `AT+QUIMSLOT=n`、软重启 `AT+CFUN=1,1` |
+| `usr/sbin/openfi-modem-link` | 连接状态与流量（`ifstatus` + `jsonfilter` + `/sys/class/net/usb0/statistics`） |
+| `usr/sbin/openfi-modem-at` | AT 终端后端（单行/限长/黑名单过滤） |
+| `usr/sbin/openfi-modem-signal` | 信号采样（`sample`/`clear`/`daemon`）+ 历史查询 |
+| `etc/init.d/openfi-signal` | procd 拉起采样守护，改配置保存后自动 HUP 重载 |
+
+## AT 终端的安全边界
+
+`openfi-modem-at` 有意做了三层限制，**别去掉**：
+
+1. 单行、可打印 ASCII、必须以 `AT` 开头、长度 ≤ 200 —— 否则一条命令能夹带任意多条指令
+2. 换行/回车直接删掉（多行输入会被拼成一条无效指令，而不是变成两条）
+3. **黑名单**：`AT+QCFG="usbnet"`（改 USB 模式，立刻失联）、`QFASTBOOT`/`QDOWNLOAD`（进下载模式）、`QFOTADL`/`QUPDATE`（固件升级，失败即变砖）、`AT+QRST`/`AT+QPRTPARA`（恢复出厂）、`EFS` 操作、`AT&F`。这些发错要拆机才能救。
+
+## 信号历史存在哪
+
+`/tmp/openfi-signal.log`（一行一个样本：`epoch|csq|dbm|rsrp|network`）。
+
+**故意放 /tmp**：那是 tmpfs，不写 flash。互斥写 flash 会折寿，而"看最近几小时信号"这个需求不需要持久化。
+环缓冲默认保留 **288 条**（`keep`），`interval` 默认 **60 秒** → 约 4.8 小时。重启后清空。
+
+## 隐私提示
+
+ICCID 与 IMSI 是能定位到卡和用户的标识。页面只在本机显示，但**截图/日志里带上它们要留意**。
 
 ## 为什么是独立插件
 
