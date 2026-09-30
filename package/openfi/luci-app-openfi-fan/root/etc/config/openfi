@@ -1,0 +1,22 @@
+config fan 'fan'
+	# auto = 按四点温度曲线；manual = 固定转速
+	option mode 'auto'
+	# 采样周期（秒）
+	option period '5'
+	# 曲线最低输出（%）。低于它的转速会被抬到该值
+	option min_speed '5'
+	# manual 模式下的固定转速（%）
+	option manual_speed '55'
+	# 达到该温度直接全速，不看曲线
+	option emergency_temp '85'
+	# 1 = 温度低于曲线起点时允许停转；0 = 至少转 min_speed
+	option fan_stop '1'
+	# 四点曲线（温度 °C / 转速 %），必须递增
+	option temp1 '55'
+	option temp2 '58'
+	option temp3 '61'
+	option temp4 '65'
+	option speed1 '5'
+	option speed2 '36'
+	option speed3 '68'
+	option speed4 '100'
