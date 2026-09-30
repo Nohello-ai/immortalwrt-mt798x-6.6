@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# OpenFi 6C —— AT 终端后端（给 LuCI 页面用）
+#
+# 用法：openfi-modem-at 'AT+CSQ'
+# 输出：{"ok":true,"cmd":"AT+CSQ","reply":"...","error":""}
+#
+# 安全约束（有意为之，别去掉）：
+#   * 只接受单行、可打印 ASCII、必须以 AT 开头、长度 ≤ 200
+#   * 拒绝换行/回车 —— 否则一条命令能夹带任意多条指令
+#   * 黑名单挡掉会造成失联或变砖的指令：USB 模式切换、fastboot、
+#     固件升级、恢复出厂、EFS 操作。这些一旦发错，模块要拆机才能救。
+#
+. /usr/lib/openfi-modem/at.sh
+
+CMD="$(printf '%s' "${1:-}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+json_out() {
+	printf '{"ok":%s,"cmd":"%s","reply":"%s","error":"%s"}\n' \
+		"$1" "$(omod_json_escape "$CMD")" "$(omod_json_escape "$2")" "$(omod_json_escape "$3")"
+}
+
+[ -n "$CMD" ] || { json_out false "" "empty"; exit 0; }
+
+case "$CMD" in
+	*[!\ -~]*) json_out false "" "non_ascii"; exit 0 ;;
+esac
+
+[ "${#CMD}" -le 200 ] || { json_out false "" "too_long"; exit 0; }
+
+case "$CMD" in
+	AT|AT*) : ;;
+	*) json_out false "" "must_start_with_AT"; exit 0 ;;
+esac
+
+# ---- 黑名单：会失联或变砖的 ----
+BLOCKED=""
+case "$(printf '%s' "$CMD" | tr 'a-z' 'A-Z' | tr -d ' ')" in
+	*'QCFG="USBNET"'*)   BLOCKED='改 USB 模式（会立刻失联，得拆机）' ;;
+	*'QCFG="USB"'*)      BLOCKED='改 USB 配置（会立刻失联）' ;;
+	*QFASTBOOT*)         BLOCKED='进入 fastboot（会失联）' ;;
+	*QDOWNLOAD*)         BLOCKED='进入下载模式（会失联）' ;;
+	*QFOTADL*|*QUPDATE*) BLOCKED='触发固件升级（失败即变砖）' ;;
+	*QRST*|*QPRTPARA*)   BLOCKED='恢复出厂参数（会丢模组配置）' ;;
+	*QEFS*|*'EFS'*)      BLOCKED='操作 EFS（会丢校准数据）' ;;
+	*'AT&F'*)            BLOCKED='恢复出厂设置（会丢模组配置）' ;;
+esac
+
+if [ -n "$BLOCKED" ]; then
+	json_out false "" "blocked: $BLOCKED"
+	exit 0
+fi
+
+# ---- 发 ----
+if ! omod_open; then
+	json_out false "" "${AT_ERR:-open_failed}"
+	exit 0
+fi
+
+REPLY="$(omod_query "$CMD")"
+omod_close
+
+case "$REPLY" in
+	*ERROR*|*'NO CARRIER'*)
+		json_out true "$REPLY" ""
+		;;
+	*) json_out true "$REPLY" "" ;;
+esac
