@@ -20,5 +20,29 @@
 		"depends": {
 			"acl": [ "luci-app-openfi-modem" ]
 		}
+	},
+
+	"admin/modem/signal": {
+		"title": "信号与流量",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "openfi/signal"
+		},
+		"depends": {
+			"acl": [ "luci-app-openfi-modem" ]
+		}
+	},
+
+	"admin/modem/at": {
+		"title": "AT 终端",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "openfi/at"
+		},
+		"depends": {
+			"acl": [ "luci-app-openfi-modem" ]
+		}
 	}
 }
