@@ -32,7 +32,12 @@ run_query() {
 		AT+QNWINFO \
 		'AT+QUIMSLOT?' \
 		'AT+QUIMSLOT=?' \
-		AT+QTEMP
+		AT+QTEMP \
+		AT+QCCID \
+		AT+CIMI \
+		'AT+CREG?' \
+		'AT+CEREG?' \
+		AT+QCAINFO
 }
 
 # 某条指令响应里的第一行非空内容（依赖模块回显）
@@ -97,6 +102,64 @@ OPERATOR="$(printf '%s' "$(omod_line "$RAW" '+COPS:')" | cut -d'"' -f2)"
 # 模块温度：+QTEMP 第一个数字就是 modem 温度
 TEMPERATURE="$(omod_first_int "$(omod_after_colon "$(omod_line "$RAW" '+QTEMP:')")")"
 
+# SIM 卡：ICCID（卡号）/ IMSI（用户标识）
+ICCID="$(omod_sec "$RAW" 'AT+QCCID' | tr -d '\r' | grep -E '[0-9]{15,22}' | head -1 | tr -dc '0-9')"
+[ -z "$ICCID" ] && ICCID="$(printf '%s\n' "$RAW" | tr -d '\r' | sed -n 's/^+QCCID:[[:space:]]*//p' | head -1 | tr -dc '0-9')"
+IMSI="$(omod_sec "$RAW" 'AT+CIMI' | tr -d '\r' | grep -E '^[0-9]{14,16}$' | head -1)"
+[ -z "$IMSI" ] && IMSI="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -E '^[0-9]{14,16}$' | head -1)"
+
+# 网络注册状态：优先 EPS(CEREG)，退回 CS(CREG)
+# 0 未注册 1 已注册(本地) 2 搜索中 3 拒绝 4 未知 5 已注册(漫游)
+reg_code() {
+	printf '%s\n' "$RAW" | tr -d '\r' | grep -E "\+$1:" | head -1 | sed 's/.*,//' | tr -dc '0-9'
+}
+reg_text() {
+	case "$1" in
+		0) echo "未注册" ;;
+		1) echo "已注册（本地）" ;;
+		2) echo "正在搜网" ;;
+		3) echo "注册被拒" ;;
+		4) echo "状态未知" ;;
+		5) echo "已注册（漫游）" ;;
+		'') echo "" ;;
+		*) echo "状态 $1" ;;
+	esac
+}
+REG_CODE="$(reg_code CEREG)"
+[ -n "$REG_CODE" ] || REG_CODE="$(reg_code CREG)"
+REG_STATUS="$(reg_text "$REG_CODE")"
+
+# 小区信息：+QCAINFO: "PCC",1650,75,"LTE BAND 3",1,300,-98,-11,-65,12
+# 取每行的 类型 / 频段 / 末尾 4 个数字（移远文档顺序：RSRP, RSRQ, RSSI, SINR）
+CELLS_JSON="$(printf '%s\n' "$RAW" | tr -d '\r' | grep -F '+QCAINFO:' | awk '
+{
+	line = $0
+	sub(/^[^:]*:[[:space:]]*/, "", line)
+	n = split(line, f, ",")
+
+	type = ""; band = ""
+	for (i = 1; i <= n; i++) {
+		gsub(/"/, "", f[i])
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", f[i])
+		if (f[i] ~ /BAND/) { if (band == "") band = f[i] }
+		else if (type == "" && f[i] ~ /^(PCC|SCC|LTE|NR)/) type = f[i]
+	}
+
+	cnt = 0
+	for (i = 1; i <= n; i++)
+		if (f[i] ~ /^-?[0-9]+$/) nums[++cnt] = f[i]
+
+	if (band == "" && cnt == 0) next
+
+	rsrp = (cnt >= 4) ? nums[cnt-3] : "null"
+	rsrq = (cnt >= 3) ? nums[cnt-2] : "null"
+	rssi = (cnt >= 2) ? nums[cnt-1] : "null"
+	sinr = (cnt >= 1) ? nums[cnt]   : "null"
+
+	printf "%s{\"type\":\"%s\",\"band\":\"%s\",\"rsrp\":%s,\"rsrq\":%s,\"rssi\":%s,\"sinr\":%s}",
+		(m++ ? "," : ""), type, band, rsrp, rsrq, rssi, sinr
+}')"
+
 # ------------------------------------------------------------ 输出
 SLOTS_JSON='[]'
 if [ -n "$SIM_SLOTS" ]; then
@@ -119,6 +182,10 @@ cat <<EOF
   "csq": "$(omod_json_escape "$CSQ")",
   "dbm": "$(omod_json_escape "$DBM")",
   "rsrp": "$(omod_json_escape "$RSRP")",
-  "temperature": "$(omod_json_escape "$TEMPERATURE")"
+  "temperature": "$(omod_json_escape "$TEMPERATURE")",
+  "iccid": "$(omod_json_escape "$ICCID")",
+  "imsi": "$(omod_json_escape "$IMSI")",
+  "reg_status": "$(omod_json_escape "$REG_STATUS")",
+  "cells": [${CELLS_JSON}]
 }
 EOF
