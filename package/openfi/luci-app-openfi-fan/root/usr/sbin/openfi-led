@@ -1,0 +1,116 @@
+#!/bin/sh
+#
+# OpenFi 6C 状态灯控制（system / internet / wifi / modem）
+#
+#   openfi-led apply     按 UCI openfi.led.* 应用
+#   openfi-led status    输出一行 JSON（给 LuCI 页面）
+#
+# 设备树里这四盏灯都是普通 GPIO，且没有 default-trigger ——
+# 开机默认全灭，必须由本脚本驱动。
+#
+# 每盏灯独立设置：
+#   on     常亮（trigger=none, brightness=1）
+#   off    常灭（trigger=none, brightness=0）
+#   keep   不干预：完全不动它，交回内核或其它程序（例如 /etc/config/system 里的 led 段）
+#
+# 总开关 openfi.led.enabled=0 → 四盏灯全部熄灭（夜间模式）。
+#
+LED_NAMES="system internet wifi modem"
+LEDROOT=${OPENFI_LEDROOT:-/sys/class/leds}
+RUNDIR=${OPENFI_RUNDIR:-/var/run}
+
+num() {
+	case "$1" in
+		''|*[!0-9-]*) echo null ;;
+		*) echo "$1" ;;
+	esac
+}
+
+led_cfg() {
+	v=$(uci -q get "openfi.led.$1" 2>/dev/null)
+	case "$v" in
+		on|off|keep) echo "$v" ;;
+		*) echo on ;;
+	esac
+}
+
+global_enabled() {
+	v=$(uci -q get openfi.led.enabled 2>/dev/null)
+	case "$v" in
+		0) echo 0 ;;
+		*) echo 1 ;;
+	esac
+}
+
+set_one() {
+	name=$1
+	mode=$2
+	p="$LEDROOT/$name"
+
+	[ -d "$p" ] || return 0
+	[ -w "$p/brightness" ] || return 1
+
+	case "$mode" in
+		on)
+			printf 'none\n' > "$p/trigger" 2>/dev/null
+			printf '1\n'    > "$p/brightness"
+			;;
+		off)
+			printf 'none\n' > "$p/trigger" 2>/dev/null
+			printf '0\n'    > "$p/brightness"
+			;;
+		keep)
+			: ;;
+	esac
+
+	return 0
+}
+
+do_apply() {
+	rc=0
+
+	if [ "$(global_enabled)" = 0 ]; then
+		for n in $LED_NAMES; do
+			set_one "$n" off || rc=1
+		done
+		[ "$rc" -eq 0 ] && logger -t openfi-led "灯光总开关关闭：四盏灯全灭"
+		return "$rc"
+	fi
+
+	for n in $LED_NAMES; do
+		set_one "$n" "$(led_cfg "$n")" || rc=1
+	done
+
+	return "$rc"
+}
+
+do_status() {
+	printf '{"enabled":%s,"leds":[' "$(global_enabled)"
+
+	first=1
+	for n in $LED_NAMES; do
+		p="$LEDROOT/$n"
+
+		[ "$first" -eq 1 ] || printf ','
+		first=0
+
+		if [ -d "$p" ]; then
+			tr=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$p/trigger" 2>/dev/null)
+			br=$(cat "$p/brightness" 2>/dev/null)
+
+			printf '{"name":"%s","exists":true,"trigger":"%s","brightness":%s,"mode":"%s"}' \
+				"$n" "${tr:-none}" "$(num "${br:-}")" "$(led_cfg "$n")"
+		else
+			printf '{"name":"%s","exists":false,"trigger":null,"brightness":null,"mode":"%s"}' \
+				"$n" "$(led_cfg "$n")"
+		fi
+	done
+
+	printf ']}\n'
+}
+
+case "${1:-apply}" in
+	apply)  do_apply ;;
+	status) do_status ;;
+	*)      echo "用法: openfi-led {apply|status}" >&2; exit 1 ;;
+esac
