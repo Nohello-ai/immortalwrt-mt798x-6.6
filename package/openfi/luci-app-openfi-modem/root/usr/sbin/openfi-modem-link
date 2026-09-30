@@ -1,0 +1,80 @@
+#!/bin/sh
+#
+# OpenFi 6C —— USB 模组的连接状态与流量统计（只读）
+#
+# 输出一行 JSON：
+#   device / ifname      物理网口（usb0）与逻辑接口（wan）
+#   up                   接口是否 up
+#   proto / uptime       协议与本次连接持续秒数
+#   ipv4 / gw / dns      地址（含掩码）/ 默认网关 / DNS
+#   rx_bytes / tx_bytes  累计字节数
+#   t                    采样时刻（epoch 秒）
+#
+# 实时速率不在这里算 —— 页面拿相邻两次采样的差值自己算，
+# 这样设备侧不用存任何状态，重启页面也不会跳变。
+#
+# 依赖：busybox + ifstatus + jsonfilter（OpenWrt 基础系统自带）。
+
+. /usr/lib/openfi-modem/at.sh
+
+LOG_IFACE="wan"
+
+num() {
+	case "$1" in
+		''|*[!0-9-]*) echo null ;;
+		*) echo "$1" ;;
+	esac
+}
+
+str() {
+	omod_json_escape "$1"
+}
+
+# 数组（jsonfilter 每个匹配输出一行）
+jarray() {
+	printf '%s\n' "$1" | awk 'NF { printf "%s\"%s\"", (n++ ? "," : ""), $0 }'
+}
+
+# ---------------------------------------------------------------- 网口
+DEV="$(uci -q get network.wan.device 2>/dev/null)"
+[ -n "$DEV" ] || DEV="$(uci -q get network.wan.ifname 2>/dev/null)"
+
+if [ -z "$DEV" ] || [ ! -d "/sys/class/net/$DEV" ]; then
+	DEV="$(ls /sys/class/net 2>/dev/null | grep -E '^usb[0-9]+$' | head -1)"
+fi
+[ -n "$DEV" ] || DEV="usb0"
+
+# ---------------------------------------------------------------- 接口状态
+ST="$(ifstatus "$LOG_IFACE" 2>/dev/null)"
+get() { printf '%s' "$ST" | jsonfilter -e "$1" 2>/dev/null; }
+
+UP="$(get '@.up')"
+PROTO="$(get '@.proto')"
+UPTIME="$(get '@.uptime')"
+GW="$(get '@.route[0].nexthop')"
+IPV4="$(get '@["ipv4-address"][*].address')"
+DNS="$(get '@["dns-server"][*]')"
+
+case "$UP" in
+	true|false) : ;;
+	*) UP=false ;;
+esac
+
+# ---------------------------------------------------------------- 流量
+RX="$(cat "/sys/class/net/$DEV/statistics/rx_bytes" 2>/dev/null)"
+TX="$(cat "/sys/class/net/$DEV/statistics/tx_bytes" 2>/dev/null)"
+T="$(date +%s)"
+
+printf '{'
+printf '"device":"%s"' "$(str "$DEV")"
+printf ',"ifname":"%s"' "$(str "$LOG_IFACE")"
+printf ',"up":%s' "$UP"
+printf ',"proto":"%s"' "$(str "$PROTO")"
+printf ',"uptime":%s' "$(num "$UPTIME")"
+printf ',"ipv4":[%s]' "$(jarray "$IPV4")"
+printf ',"gw":"%s"' "$(str "$GW")"
+printf ',"dns":[%s]' "$(jarray "$DNS")"
+printf ',"rx_bytes":%s' "$(num "$RX")"
+printf ',"tx_bytes":%s' "$(num "$TX")"
+printf ',"t":%s' "$(num "$T")"
+printf '}\n'
