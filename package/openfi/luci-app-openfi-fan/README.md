@@ -1,6 +1,7 @@
 # luci-app-openfi-fan
 
-OpenFi 6C 的**散热风扇管理**。独立包，跟厂商那套 `luci-app-openfi` 解耦。
+OpenFi 6C 的**散热风扇 + 状态灯管理**。独立包，跟厂商那套 `luci-app-openfi` 解耦。
+菜单是顶层 **散热与灯光**，下面两页：**风扇控制** 和 **状态灯**。
 
 ## 为什么独立
 
@@ -8,7 +9,8 @@ OpenFi 6C 的**散热风扇管理**。独立包，跟厂商那套 `luci-app-open
 这里拆出来：
 
 - **守护进程**：`/usr/sbin/openfi-fan`（常驻，procd 托管，挂了自动拉起）
-- **LuCI 页面**：顶层菜单 **散热 → 风扇控制**
+- **LuCI 页面**：顶层菜单 **散热与灯光** →「风扇控制」/「状态灯」
+- **状态灯**：`/usr/sbin/openfi-led`，不需要常驻进程，开机和保存配置时各跑一次
 - 页面保存后给守护进程发 **SIGHUP 热重载** —— 风扇不中断，不用重启服务
 
 ## 硬件特性（决定了实现方式）
@@ -40,6 +42,7 @@ OpenFi 6C 的**散热风扇管理**。独立包，跟厂商那套 `luci-app-open
 ## 页面
 
 - **实时状态**（5 秒刷新）：守护进程、当前状态/原因、CPU 温度、风扇输出、目标转速、两路 PWM 实况、状态更新时间
+- **状态灯页**：实时表格（每盏灯的当前 trigger / 亮灭 / 配置）+ 总开关 + 四盏灯三态设置
 - **曲线与当前温度**：手绘 SVG。横轴温度、纵轴转速，画四个折点 + 紧急温度虚线 + **当前温度竖虚线**，一眼看出风扇此刻落在曲线哪一段
 - **表单**：工作模式 / 四点温度曲线 / 保护与限制
 
@@ -79,9 +82,30 @@ config fan 'fan'
 	option speed2 '36'
 	option speed3 '68'
 	option speed4 '100'
+
+config led 'led'
+	option enabled '1'          # 0 = 四盏灯全灭（夜间模式）
+	option system 'on'          # on 常亮 / off 常灭 / keep 不干预
+	option internet 'on'
+	option wifi 'on'
+	option modem 'on'
 ```
 
-命令行改完记得热重载：`/etc/init.d/openfi-fan reload`
+命令行改完记得重载：`/etc/init.d/openfi-fan reload`（风扇热重载 + 灯光重新应用）
+
+## 状态灯
+
+设备树里四盏灯都是**普通 GPIO**，而且**没有 `default-trigger`** —— 开机默认全灭，
+必须由 `openfi-led` 驱动。这跟厂商那套 `op_led.sh` 做的事一样（它就循环调
+`apply_hardware`），但我们不需要 2 秒一次的守护循环：**开机跑一次 + 保存配置时跑一次**就够。
+
+| 设置 | 行为 |
+|---|---|
+| 常亮 | `trigger=none`、`brightness=1` |
+| 常灭 | `trigger=none`、`brightness=0` |
+| 不干预 | 完全不动它，交回内核或别的程序（例如 `/etc/config/system` 的 `led` 段） |
+
+总开关关掉 = 四盏灯全灭（夜间模式），忽略每盏灯的设置。
 
 ## 依赖
 
