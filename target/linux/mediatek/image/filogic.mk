@@ -1140,7 +1140,10 @@ define Device/openfi_6c
   DEVICE_DTS := mt7981b-openfi-6c
   DEVICE_DTS_DIR := ../dts
   SUPPORTED_DEVICES += openfi,6c
-  DEVICE_PACKAGES := automount  kmod-hwmon-pwmfan kmod-usb-net-rndis kmod-usb-serial-option f2fsck losetup mkf2fs kmod-fs-f2fs kmod-mmc luci-app-openfi 
+  # kmod-hwmon-pwmfan 已移除:风扇由用户态直接控两路 PWM(/usr/sbin/op_fan.sh),
+  # 装内核 pwm-fan 驱动会占住 pwm0 导致用户态 export 失败。
+  # 对应 DTS 里 pwm-fan 节点保持 status = "disabled"。
+  DEVICE_PACKAGES := automount kmod-usb-net-rndis kmod-usb-serial-option f2fsck losetup mkf2fs kmod-fs-f2fs kmod-mmc luci-app-openfi 
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
         fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
