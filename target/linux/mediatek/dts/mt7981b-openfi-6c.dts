@@ -32,11 +32,16 @@
 			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 		};
 
-		mode {
-			label = "mode";
-			linux,input-type = <EV_SW>;
-			linux,code = <BTN_0>;
-			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+		/*
+		 * 物理模式开关。op_led.sh / op_switch.sh 用
+		 *   cat /sys/kernel/debug/gpio | grep func | grep hi
+		 * 检测这个开关,所以 label 必须是 "func";
+		 * 极性与键值对齐原厂 DTB(原厂为 ACTIVE_HIGH + 0xab = KEY_CONFIG)。
+		 */
+		func {
+			label = "func";
+			linux,code = <KEY_CONFIG>;
+			gpios = <&pio 0 GPIO_ACTIVE_HIGH>;
 			debounce-interval = <60>;
 		};
 	};
@@ -44,28 +49,36 @@
 	leds {
 		compatible = "gpio-leds";
 
-		led_status_blue:led_0 {
-			function = LED_FUNCTION_STATUS;
-			color = <LED_COLOR_ID_GREEN>;
+		/*
+		 * 名字必须与厂商脚本写死的路径一致:
+		 *   /sys/class/leds/{system,internet,wifi,modem}/
+		 * 所以统一用 label —— 若用 function + color,内核会拼成
+		 * "green:status" / "green:wlan",脚本就找不到了。
+		 * 引脚与 default-state 对齐原厂 DTB。
+		 * 注意:led_status_blue 这个 phandle 被上面的 aliases 引用,不能改名。
+		 */
+		led_status_blue: led_0 {
+			label = "system";
 			gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
 		led_1 {
 			label = "internet";
-			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
 		led_2 {
-			function = LED_FUNCTION_WLAN;
-			color = <LED_COLOR_ID_GREEN>;
+			label = "wifi";
 			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
 		led_3 {
 			label = "modem";
-			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
+			default-state = "off";
 		};
 	};
 
@@ -97,12 +110,24 @@
 		};
 	};
 
+	/*
+	 * 必须保持 disabled。
+	 *
+	 * 厂商风扇方案是用户态直控两路 PWM(/usr/sbin/op_fan.sh):
+	 *   echo 0 > /sys/class/pwm/pwmchip0/export   -> pwm0
+	 *   echo 1 > /sys/class/pwm/pwmchip0/export   -> pwm1
+	 *   period = 40000 (25kHz);注释原文:mt7981 不支持极性,故 duty 越低风扇越快
+	 *
+	 * 若这里设为 okay,内核 pwm-fan 驱动会通过 consumer API 占住 pwm0,
+	 * 用户态 export 会 EBUSY,风扇控制失效。
+	 * 原厂 DTB 中同样没有 pwm-fan 节点。
+	 */
 	fan: pwm-fan {
 		compatible = "pwm-fan";
 		#cooling-cells = <2>;
 		cooling-levels = <0 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200 210 220 240 255>;
 		pwms = <&pwm 0 40000 0>;
-		status = "okay";
+		status = "disabled";
 	};
 };
 
@@ -186,8 +211,30 @@
 				factory: partition@180000 {
 					label = "Factory";
 					reg = <0x180000 0x0200000>;
-					macaddr: macaddr@0 {
-						reg = <0x4 0x6>;
+
+					/*
+					 * macaddr 必须包在 nvmem-layout/fixed-layout 里,
+					 * 并声明 mac-base + #nvmem-cell-cells,否则下面
+					 * gmac1 的 nvmem-cells = <&macaddr 0> 取不到值,
+					 * eth1 会变成随机 MAC。
+					 * 偏移 0x4 与原厂 board.d 的
+					 *   mtd_get_mac_binary Factory 0x04
+					 * 一致,保持不变。
+					 *
+					 * 注:原厂 DTB 未给 Factory 加 read-only,
+					 * 本文件同样不加(该分区承载 WiFi 校准数据,
+					 * 保留可写以便后期修 MAC/校准)。
+					 */
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						macaddr: macaddr@0 {
+							compatible = "mac-base";
+							reg = <0x4 0x6>;
+							#nvmem-cell-cells = <1>;
+						};
 					};
 				};
 
@@ -207,7 +254,9 @@
 					reg = <0x0600000 0x0080000>;
 				};
 
-				partition@5c0000 {
+				/* node 名曾误写为 partition@5c0000,与 reg 的 0x680000 不符;
+				 * 原厂 DTB 中此处为 partition@680000。reg 值本来就是对的。 */
+				partition@680000 {
 					label = "ubi";
 					reg = <0x680000 0xe980000>;
 				};
@@ -216,10 +265,30 @@
 };
 
 &pio {
+	/*
+	 * SPI-NAND 是启动介质。除 mux 之外必须补上 conf-pu / conf-pd:
+	 * CS/HOLD/WP 上拉、CLK/MOSI/MISO 下拉 + 8mA 驱动强度。
+	 * 原先只有 mux,丢了驱动能力与上下拉配置 —— 本树内其余 12+ 块
+	 * MT7981 板(abt_asr3000 / qihoo_360t7 / openwrt_one 等)都有这两组,
+	 * 原厂 DTB 也有(原厂写作 drive-strength=<8>、bias=<0x67>,
+	 * 这里采用本树通用的符号写法,与同族板子保持一致)。
+	 */
 	spi0_flash_pins: spi0-pins {
 		mux {
 			function = "spi";
 			groups = "spi0", "spi0_wp_hold";
+		};
+
+		conf-pu {
+			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+			drive-strength = <MTK_DRIVE_8mA>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
+		};
+
+		conf-pd {
+			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+			drive-strength = <MTK_DRIVE_8mA>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
 		};
 	};
 
