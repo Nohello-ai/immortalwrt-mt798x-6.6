@@ -7,11 +7,21 @@ name: build-openfi6c
 #   staging_dir + toolchain ~3   GB  省掉重建工具链（约 40 分钟）
 #   .ccache                 ~3   GB  编译产物缓存（大头）
 #
+# 「带上 LuCI 包」开关（workflow_dispatch 的 with_packages）：
+#   打开 → 把同账号下的 openfi6c-packages 仓库挂成 feed 并编进固件
+#          （风扇/状态灯管理 + 5G 模组信息，含静默模式开关与连通性检测）
+#   关闭 → 只出裸固件
+#   push / schedule 触发没有这个输入，默认按「打开」处理。
+#
 # 成功后在 Releases 里出**两个**文件：固件本体 + 它的 MD5 文本。
 
 on:
   workflow_dispatch:
     inputs:
+      with_packages:
+        description: '把 openfi6c-packages 的 LuCI 包一起编进固件'
+        type: boolean
+        default: true
       publish:
         description: '编译成功后创建版本发布'
         type: boolean
@@ -46,6 +56,20 @@ jobs:
           TAG="v25.12-openfi6c-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "版本号: $TAG"
+
+      # 按钮只在 workflow_dispatch 时存在；push / schedule 没有 inputs，
+      # 这里统一成一个明确的 true/false，后面的步骤都用它判断。
+      - name: 决定是否带 LuCI 包
+        id: opt
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.with_packages }}"
+          else
+            v="true"
+          fi
+          case "$v" in true) v=true ;; *) v=false ;; esac
+          echo "with_packages=$v" >> "$GITHUB_OUTPUT"
+          echo "把 openfi6c-packages 编进固件: $v"
 
       - name: 取出源码
         uses: actions/checkout@v4
@@ -109,17 +133,47 @@ jobs:
             ccache-25.12-
 
       # ---------------- 构建 ----------------
+      - name: 加入 openfi6c-packages feed（按开关）
+        if: steps.opt.outputs.with_packages == 'true'
+        run: |
+          set -eu
+          echo "src-git openfi6c https://github.com/${{ github.repository_owner }}/openfi6c-packages.git" >> feeds.conf.default
+          echo "----- feeds.conf.default -----"
+          cat feeds.conf.default
+
       - name: 更新并安装 feeds
+        id: feeds
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
+            C=$(git -C feeds/openfi6c rev-parse --short HEAD 2>/dev/null || echo "?")
+            echo "pkg_commit=$C" >> "$GITHUB_OUTPUT"
+            echo "----- openfi6c feed 实际拉到的提交 -----"
+            git -C feeds/openfi6c log -1 --format='%H %ad %s' --date=short 2>/dev/null || true
+          else
+            echo "pkg_commit=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 应用配置
         run: |
           cp defconfig/openfi6c.config .config
+          if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
+            cat >> .config <<'EOF'
+          CONFIG_PACKAGE_luci-app-openfi-fan=y
+          CONFIG_PACKAGE_luci-app-openfi-modem=y
+          EOF
+          fi
           make defconfig
           echo "----- 关键配置确认 -----"
           grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE_openfi_6c=|CONFIG_PACKAGE_kmod-mt_wifi=|CONFIG_PACKAGE_kmod-warp=|CONFIG_PACKAGE_kmod-mediatek_hnat=|CONFIG_PACKAGE_mtwifi-cfg=' .config || true
+          if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
+            echo "----- 断言两个 LuCI 包真的被选中 -----"
+            for s in luci-app-openfi-fan luci-app-openfi-modem; do
+              grep -q "^CONFIG_PACKAGE_${s}=y" .config || { echo "::error::${s} 没进 .config（feed 没挂上或包名写错）"; exit 1; }
+              echo "OK: ${s}=y"
+            done
+          fi
           echo "----- 断言 ccache 真的开了 -----"
           grep -q '^CONFIG_CCACHE=y' .config || { echo "::error::CONFIG_CCACHE 没生效，缓存形同虚设"; exit 1; }
           echo "OK: CONFIG_CCACHE=y"
@@ -194,6 +248,13 @@ jobs:
             TAG="${TAG}-$(git rev-parse --short HEAD)"
           fi
           FWNAME=$(cd out && ls | grep sysupgrade | head -1)
+          if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
+            PKG_ROW="**已内置** \`luci-app-openfi-fan\` + \`luci-app-openfi-modem\` @ \`${{ steps.feeds.outputs.pkg_commit }}\`"
+            FAN_ROW='由 `luci-app-openfi-fan` 管理：四点温度曲线 + 四盏状态灯；物理开关切「静默模式」（风扇停转 + 四灯全灭，含过热保护）'
+          else
+            PKG_ROW='未内置（可在 Actions 里手动运行本工作流，把 `with_packages` 打开）'
+            FAN_ROW='本版**不含**管理（pwm-fan 已 disabled，无人态脚本；按反极性等效全速常转）'
+          fi
           cat > /tmp/notes.md <<NOTES
           ## OpenFi 6C 固件 $TAG
 
@@ -202,7 +263,8 @@ jobs:
           | 底座 | \`padavanonly/immortalwrt-mt798x-6.6\` @ \`openwrt-24.10-6.6\`（内核 6.6） |
           | WiFi | 联发科闭源 \`mt_wifi\` + WARP + HNAT（HNAT 已绑定 LAN=eth1 / PPD=eth1） |
           | WAN | USB 模组（RNDIS → \`usb0\`）自动成为 WAN，模组自己拨号 |
-          | 风扇/LED | 本版**不含**管理（pwm-fan 已 disabled，无人态脚本；按反极性等效全速常转） |
+          | 风扇/LED | $FAN_ROW |
+          | LuCI 包 | $PKG_ROW |
 
           ### 刷机
 
