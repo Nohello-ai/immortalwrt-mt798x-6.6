@@ -227,6 +227,9 @@ jobs:
           echo "----- 断言 ccache 真的开了 -----"
           grep -q '^CONFIG_CCACHE=y' .config || { echo "::error::CONFIG_CCACHE 没生效，缓存形同虚设"; exit 1; }
           echo "OK: CONFIG_CCACHE=y"
+          echo "----- 断言 initramfs 没被重新打开（否则白编一整套内核+rootfs）-----"
+          grep -q '^CONFIG_TARGET_ROOTFS_INITRAMFS=y' .config && { echo "::error::initramfs 又被打开了 —— 我们发版只发布 sysupgrade，不需要它，见 defconfig 里的注释"; exit 1; }
+          echo "OK: initramfs 已关闭"
 
       - name: 下载源码包
         run: |
