@@ -76,6 +76,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      # 固件自带的脚本也要有回归测试。这个测试不碰硬件，一两秒跑完，
+      # 但能挡住"改错模式映射/探测顺序"这类会让设备没网的改动。
+      - name: 自检（USB 模式探测脚本）
+        run: sh tests/test-usbmode.sh
+
       - name: 释放磁盘空间
         run: |
           df -h /
