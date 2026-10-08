@@ -171,10 +171,19 @@ jobs:
           # 后面「应用配置」那步的断言直接把 CI 打红（这正是我们想要的：宁可红，不要静默出错固件）。
           # 正确做法：clone 到 package/ 下当普通包用。
           git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git package/luci-theme-aurora
+          test -f package/luci-theme-aurora/Makefile || { echo "::error::aurora 源码没取到"; exit 1; }
           echo "----- 包目录内容 -----"
           ls package/luci-theme-aurora/
-          echo "----- 确认 PKG_NAME -----"
-          grep -E '^PKG_NAME' package/luci-theme-aurora/Makefile || { echo "::error::aurora 的 Makefile 里没有 PKG_NAME"; exit 1; }
+          # 【别检查 PKG_NAME】它的 Makefile 里根本没有 PKG_NAME ——
+          # 只有 LUCI_TITLE / LUCI_DEPENDS / PKG_VERSION，包名由 luci.mk 从【目录名】取
+          # （PKG_NAME ?= $(notdir $(CURDIR))）。所以目录名必须是 luci-theme-aurora，
+          # 这样 CONFIG_PACKAGE_luci-theme-aurora 才对得上 defconfig。
+          # 之前这里写了 grep '^PKG_NAME' 就 exit 1，把好好的构建误杀了（CI run #6）。
+          echo "----- 目录名（决定 CONFIG_PACKAGE_ 后面的名字）-----"
+          basename package/luci-theme-aurora
+          test "$(basename package/luci-theme-aurora)" = "luci-theme-aurora" || { echo "::error::目录名不是 luci-theme-aurora，CONFIG_PACKAGE_luci-theme-aurora 会对不上"; exit 1; }
+          echo "----- 它的 Makefile 长这样（确认是 luci.mk 那套）-----"
+          grep -E '^(LUCI_TITLE|LUCI_DEPENDS|PKG_VERSION|include)' package/luci-theme-aurora/Makefile || true
           # 换掉 argon 的原因：argon 占 516KB + 6 个字体文件（手机侧约 180KB）；
           # aurora 是 Vite + Tailwind 构建的，移动端适配更好，字体只有 1 个 23KB。
 
