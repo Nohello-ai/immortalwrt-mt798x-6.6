@@ -122,6 +122,17 @@ jobs:
           restore-keys: |
             staging-25.12-
 
+      - name: 缓存内核编译目录（省掉每次重编内核）
+        uses: actions/cache@v4
+        with:
+          # 【提速】staging 缓存只覆盖工具链，内核每次都要重编（实测 8~15 分钟）。
+          # 这里单独缓存内核的 build_dir。缓存配额实测只用了 3GB / 10GB，放得下。
+          # key 里带 kernel-version.mk：内核版本一变就自动失效，不会拿到错的内核。
+          path: build_dir/target-*/linux-mediatek_filogic
+          key: kernel-25.12-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'target/linux/mediatek/Makefile', 'target/linux/mediatek/filogic/config-6.6') }}
+          restore-keys: |
+            kernel-25.12-${{ runner.arch }}-
+
       - name: ccache 配置
         run: |
           # OpenWrt 的 rules.mk 会用 CONFIG_CCACHE_DIR（默认 $(TOPDIR)/.ccache）覆盖环境变量，
@@ -129,6 +140,13 @@ jobs:
           echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
           echo "CCACHE_BASEDIR=${{ github.workspace }}" >> $GITHUB_ENV
+          # 【提速】每次 CI 都是全新 clone 的文件，mtime/ctime 全变了，
+          # ccache 默认会因为这些时间戳把缓存判为失效 —— 白丢命中率。
+          # 允许它忽略这些跟内容无关的因素，命中率明显上升。
+          echo "CCACHE_SLOPPINESS=time_macros,include_file_ctime,include_file_mtime,file_stat_matches" >> $GITHUB_ENV
+          # 压缩后同样 3G 能装下更多条目（CPU 开销换空间，在 4 核 runner 上划算）。
+          echo "CCACHE_COMPRESS=true" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESSLEVEL=6" >> $GITHUB_ENV
           mkdir -p .ccache
 
       - name: 恢复 ccache
@@ -218,7 +236,9 @@ jobs:
         id: compile
         run: |
           set -o pipefail
-          time make -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          # 【提速】+1 是为了让 CPU 在等 I/O（下载/解包/configure）时不被空着。
+          # GitHub 标准 runner 是 4 核 16GB 内存，-j5 不会 OOM。
+          time make -j"$(($(nproc) + 1))" 2>&1 | tee /tmp/build.log
 
       - name: 编译失败诊断
         if: failure() && steps.compile.outcome == 'failure'
