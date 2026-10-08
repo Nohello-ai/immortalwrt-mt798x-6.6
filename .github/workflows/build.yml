@@ -258,10 +258,24 @@ jobs:
           echo "----- 断言 initramfs 没被重新打开（否则白编一整套内核+rootfs）-----"
           grep -q '^CONFIG_TARGET_ROOTFS_INITRAMFS=y' .config && { echo "::error::initramfs 又被打开了 —— 我们发版只发布 sysupgrade，不需要它，见 defconfig 里的注释"; exit 1; }
           echo "OK: initramfs 已关闭"
-          echo "----- 断言 5G 数据通道驱动都在（切 NCM/ECM 时不至于断网）-----"
-          for k in kmod-usb-net-cdc-ncm kmod-usb-net-cdc-ether kmod-usb-net-rndis; do
-            grep -q "^CONFIG_PACKAGE_${k}=y" .config || { echo "::error::${k} 没进 .config —— 模组切数据模式时会没有驱动"; exit 1; }
-            echo "OK: ${k}=y"
+          echo "----- 检查 5G 数据通道驱动（切 NCM/MBIM 要用）-----"
+          # 这里【不】用 ::error:: 中断编译：这几个 kmod 是"为将来切模式备着"的，
+          # 缺了不影响现在 RNDIS 上网，但会让模式切换功能失效。
+          # 所以打 ::warning:: 并把 .config 的实际状态打印出来，让日志能自证原因，
+          # 同时不卡住发版。
+          # （上一版写成 ::error:: 直接 exit 1，把整个编译拦死，而日志里还看不出
+          #   到底是哪个符号被 make defconfig 丢了。）
+          for k in kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim kmod-usb-net-cdc-ether \
+                   kmod-usb-net-rndis umbim; do
+            if grep -q "^CONFIG_PACKAGE_${k}=y" .config; then
+              echo "OK: ${k}=y"
+            else
+              echo "::warning::${k} 没进 .config —— 切数据模式时可能没有对应驱动/工具"
+              echo "      .config 里相关的行："
+              grep -i "${k}" .config | head -5 | sed 's/^/        /' || true
+              echo "      （一行都没有 = 这个符号在树里不存在）"
+              echo "      .config 里 kmod-usb-net* 条目数: $(grep -c '^CONFIG_PACKAGE_kmod-usb-net' .config)"
+            fi
           done
 
       - name: 下载源码包
