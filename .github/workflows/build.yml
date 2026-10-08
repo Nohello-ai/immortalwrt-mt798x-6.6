@@ -79,7 +79,20 @@ jobs:
       # 固件自带的脚本也要有回归测试。这个测试不碰硬件，一两秒跑完，
       # 但能挡住"改错模式映射/探测顺序"这类会让设备没网的改动。
       - name: 自检（USB 模式探测脚本）
-        run: sh tests/test-usbmode.sh
+        run: |
+          # 【坑】OpenWrt 树的 .gitignore 里有 `/files`，会把整个 files/ 目录排除掉。
+          # 所以新加进 files/ 的文件如果只用 `git add -A`，会【静默不提交】——
+          # 本地测试全过，CI 里却因为文件不存在而失败。必须先检查。
+          for f in files/usr/sbin/openfi-usbmode \
+                   files/etc/init.d/openfi-usbmode \
+                   files/etc/config/openfi_usbmode; do
+            if [ ! -f "$f" ]; then
+              echo "::error::缺少 $f —— 它被 .gitignore 的 /files 规则挡了，要用 git add -f 强制加入"
+              exit 1
+            fi
+            echo "OK: $f 存在"
+          done
+          sh tests/test-usbmode.sh
 
       - name: 释放磁盘空间
         run: |

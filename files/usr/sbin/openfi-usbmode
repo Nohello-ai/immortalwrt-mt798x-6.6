@@ -1,0 +1,472 @@
+#!/bin/sh
+#
+# openfi-usbmode —— 开机自动探测模组最佳的 USB 数据模式，并把结果锁下来。
+#
+# 【这个脚本放在固件里（files/），不属于任何 LuCI 包】
+# 理由：它管的是"系统怎么和模组说话"，是板级行为，和界面无关；
+#       放在 files/ 里能保证无论 CI 的 with_packages 开关什么状态，
+#       它都一定在固件里。而且它不依赖任何包 —— 自带最小的 AT 收发，
+#       只是和包里的脚本共用同一把串口锁，免得互相插话。
+#
+# 为什么需要它：
+#   模组的 usbnet 模式决定"模组怎么把数据交给 CPU"，速度和结构差别很大：
+#       2  MBIM   —— 没有模组内部 NAT，主机直接拿运营商 IP（理论上最好）
+#       5  NCM    —— 多包聚合，比 RNDIS 快一档（仍有内部 NAT）
+#       3  RNDIS  —— 兼容性最好、速度最差（模组默认）
+#   开机按 2 → 5 → 3 逐个试，哪个【真的拿到 IP 并且 ping 得通】就用哪个。
+#
+# 为什么不用 RMNET/QMI：
+#   问过模组本身：AT+QCFG=? → +QCFG: "usbnet",(1,2,3,5,11,13,15)
+#   列表里根本没有 0/4。RM500U-CN 是展锐平台，高通那套原生模式没实现。
+#
+# 安全设计（这块出错就没网）：
+#   · 最后一定是 RNDIS 兜底 —— 全失败时回到和出厂一样的状态
+#   · 只有【真拿到 IP 并且 ping/DNS 通】才算成功，光出现网卡不算
+#   · 结果写 /etc/openfi_usbmode.state，以后开机直接用，不再折腾
+#   · 失败过的模式记下来跳过，防止每次开机卡在同一个坏模式
+#   · 每次开机最多切 MAX_TRIES 次，防止来回死循环
+#   · 按【驱动】找网卡，不猜名字（RNDIS 叫 usb0，NCM/MBIM 叫 wwan0）
+#   · 切换后必须等 AT 口真的能应答 AT，才算重新枚举完成
+#
+
+# 允许覆盖：测试要指到 /tmp，绝不写真实系统
+STATE="${OPENFI_USBMODE_STATE:-/etc/openfi_usbmode.state}"
+TAG=openfi-usbmode
+
+# 探测顺序：从"理论上最好"到"兼容性最好"
+CHAIN="2 5 3"
+
+MAX_TRIES=6			# 每次开机最多切换几次
+REENUM_WAIT=60			# 等 USB 重新枚举 + AT 口复活的上限（秒）
+LINK_WAIT=25			# 等地址 + 验连通的上限（秒）
+
+log() { logger -t "$TAG" "$*"; }
+
+mode_name() {
+	case "$1" in
+		0) echo RMNET ;;  1) echo ECM ;;   2) echo MBIM ;;
+		3) echo RNDIS ;;  4) echo QMI ;;   5) echo NCM ;;
+		*) echo "未知($1)" ;;
+	esac
+}
+
+mode_driver() {
+	case "$1" in
+		1) echo cdc_ether ;;	# ECM
+		2) echo cdc_mbim ;;	# MBIM
+		3) echo rndis_host ;;	# RNDIS
+		5) echo cdc_ncm ;;	# NCM
+		*) echo "" ;;
+	esac
+}
+
+# MBIM 要用 proto mbim（umbim），其余都是标准 DHCP
+mode_proto() {
+	case "$1" in
+		2) echo mbim ;;
+		*) echo dhcp ;;
+	esac
+}
+
+# ================================================================ 串口（自带）
+# 只为了发几条 AT。锁协议和 luci-app-openfi-modem 的 at.sh 完全一致
+# （同一个 /var/run/openfi-at.lock、同一个 fd 9、同样最长等 12 秒），
+# 这样即使那个包也装了，两边也不会同时抢串口。
+AT_PORT=""
+AT_LOCK_MODE=""
+OPENFI_AT_LOCK=${OPENFI_AT_LOCK:-/var/run/openfi-at.lock}
+OPENFI_AT_LOCK_WAIT=${OPENFI_AT_LOCK_WAIT:-12}
+AT_LOCK_FD=9
+
+at_find_port() {
+	local p name
+
+	p="$(uci -q get openfi_usbmode.usbmode.at_port 2>/dev/null)"
+	[ -n "$p" ] && [ -c "$p" ] && { echo "$p"; return 0; }
+
+	# 按 sysfs 里的接口名找（移远的 AT 口一般叫 "Quectel USB AT Port"）
+	for p in /sys/class/tty/ttyUSB*; do
+		[ -e "$p/device/interface" ] || continue
+		name="$(cat "$p/device/interface" 2>/dev/null)"
+		case "$name" in
+			*"AT Port"*|*"AT port"*)
+				echo "/dev/${p##*/}"
+				return 0
+				;;
+		esac
+	done
+
+	for p in /dev/ttyUSB3 /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+	         /dev/ttyACM1 /dev/ttyACM0; do
+		[ -c "$p" ] && { echo "$p"; return 0; }
+	done
+	return 1
+}
+
+at_lock() {
+	local i=0 p
+
+	[ -n "$AT_LOCK_MODE" ] && return 0
+
+	if command -v flock >/dev/null 2>&1; then
+		eval "exec $AT_LOCK_FD>\"\$OPENFI_AT_LOCK\"" 2>/dev/null || return 0
+		while [ "$i" -lt "$OPENFI_AT_LOCK_WAIT" ]; do
+			if flock -n -x "$AT_LOCK_FD" 2>/dev/null; then
+				AT_LOCK_MODE="flock"
+				return 0
+			fi
+			sleep 1
+			i=$((i + 1))
+		done
+		eval "exec $AT_LOCK_FD>&-" 2>/dev/null
+		return 1
+	fi
+
+	# 退化：mkdir 原子锁 + PID 存活检查
+	while [ "$i" -lt "$OPENFI_AT_LOCK_WAIT" ]; do
+		if mkdir "$OPENFI_AT_LOCK.d" 2>/dev/null; then
+			echo $$ > "$OPENFI_AT_LOCK.d/pid"
+			AT_LOCK_MODE="mkdir"
+			return 0
+		fi
+		if [ -r "$OPENFI_AT_LOCK.d/pid" ]; then
+			p="$(cat "$OPENFI_AT_LOCK.d/pid" 2>/dev/null)"
+			if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+				rm -rf "$OPENFI_AT_LOCK.d" 2>/dev/null
+				continue
+			fi
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+at_unlock() {
+	case "$AT_LOCK_MODE" in
+		mkdir) rm -rf "$OPENFI_AT_LOCK.d" 2>/dev/null ;;
+		flock) eval "exec $AT_LOCK_FD>&-" 2>/dev/null ;;
+	esac
+	AT_LOCK_MODE=""
+	return 0
+}
+
+at_open() {
+	AT_PORT="$(at_find_port)"
+	[ -n "$AT_PORT" ] && [ -c "$AT_PORT" ] || return 1
+	at_lock || return 1
+
+	# 波特率设不上不算失败：这块板子的 USB 串口拒绝 SET_LINE_CODING
+	# （见 openfi-modem 的 at.sh 里的说明），只要 raw/min/time 设上就能收发。
+	stty -F "$AT_PORT" 115200 raw -echo -crtscts min 0 time 5 2>/dev/null ||
+	stty -F "$AT_PORT" raw -echo -crtscts min 0 time 5 2>/dev/null ||
+	stty raw -echo -crtscts min 0 time 5 < "$AT_PORT" 2>/dev/null ||
+	true
+	return 0
+}
+
+at_close() { at_unlock; }
+
+at_cmd() {
+	# 发一条指令并把回复读出来（每轮 timeout 2 秒兜底，空闲 0.5 秒 cat 就返回）
+	local out="" chunk i=0
+
+	printf '%s\r' "$1" > "$AT_PORT" 2>/dev/null || return 1
+	while [ "$i" -lt 8 ]; do
+		chunk="$(timeout 2 cat "$AT_PORT" 2>/dev/null)"
+		[ -n "$chunk" ] || break
+		out="${out}${chunk}
+"
+		i=$((i + 1))
+	done
+	printf '%s' "$out"
+}
+
+# ================================================================ 探测
+driver_present() {
+	local d
+	d="$(mode_driver "$1")"
+	[ -n "$d" ] || return 1
+	[ -d "/sys/module/$d" ] && return 0
+	find /lib/modules -name "${d}.ko*" 2>/dev/null | grep -q . && return 0
+	return 1
+}
+
+tool_present() {
+	case "$1" in
+		2) command -v umbim >/dev/null 2>&1 ;;
+		*) return 0 ;;
+	esac
+}
+
+at_get_mode() {
+	local r
+	at_open >/dev/null 2>&1 || return 1
+	r="$(at_cmd 'AT+QCFG="usbnet"')"
+	at_close
+	printf '%s' "$r" | sed -n 's/.*"usbnet",\([0-9]*\).*/\1/p' | head -1
+}
+
+at_set_mode() {
+	local r
+	at_open >/dev/null 2>&1 || return 1
+	r="$(at_cmd "AT+QCFG=\"usbnet\",$1")"
+	at_close
+	case "$r" in *OK*) return 0 ;; *) return 1 ;; esac
+}
+
+# 切 usbnet 之后模组整个重新枚举，ttyUSB* 会消失再出现 ——
+# 必须等它真能应答 AT 才算切换完成，否则后面的操作全是白做。
+wait_at_alive() {
+	local i=0 r
+	while [ "$i" -lt "$((REENUM_WAIT / 2))" ]; do
+		if at_open >/dev/null 2>&1; then
+			r="$(at_cmd 'AT')"
+			at_close
+			case "$r" in *OK*) return 0 ;; esac
+		fi
+		sleep 2
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# 按驱动找网卡，不猜名字
+find_iface() {
+	local want="$1" d ifn drv
+	[ -n "$want" ] || return 1
+	for d in /sys/class/net/*; do
+		ifn="${d##*/}"
+		drv="$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)" 2>/dev/null)"
+		[ "$drv" = "$want" ] && { echo "$ifn"; return 0; }
+	done
+	return 1
+}
+
+wait_iface() {
+	local want="$1" i=0 dev
+	while [ "$i" -lt "$((REENUM_WAIT / 2))" ]; do
+		dev="$(find_iface "$want")"
+		[ -n "$dev" ] && { echo "$dev"; return 0; }
+		sleep 2
+		i=$((i + 1))
+	done
+	return 1
+}
+
+set_wan() {
+	local dev="$1" proto="$2"
+
+	uci -q set network.wan.device="$dev"
+	uci -q set network.wan.proto="$proto"
+	uci -q set network.wan6.device="$dev"
+	uci -q set network.wan6.proto='dhcpv6'
+	uci -q commit network
+}
+
+# 真拉起网络并验连通 —— 网卡出现不代表能上网
+# （没插卡/欠费/模组假死时网卡照样在、IP 也照样有，这正是 wancheck 要解决的问题）
+verify_link() {
+	local dev="$1" i=0
+
+	ifdown wan >/dev/null 2>&1
+	sleep 1
+	ifup wan >/dev/null 2>&1
+
+	while [ "$i" -lt "$((LINK_WAIT / 2))" ]; do
+		if ifstatus wan 2>/dev/null | grep -q '"up": *true'; then
+			# ICMP 可能被运营商过滤，所以 DNS 查询也一起试
+			ping -c 2 -W 3 -I "$dev" 223.5.5.5 >/dev/null 2>&1 && return 0
+			nslookup www.baidu.com 223.5.5.5 >/dev/null 2>&1 && return 0
+		fi
+		sleep 2
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# ================================================================ 状态
+state_get() {
+	[ -f "$STATE" ] || return 1
+	sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -1
+}
+
+
+state_set() { # $1=mode $2=dev $3=proto [$4=失败列表]
+	local failed
+	failed="${4:-$(state_get failed)}"
+	# 【坑】这里不能用 `[ -n "$failed" ] && echo ...` 收尾：
+	# 条件为假时整个 { } 块返回非零，后面的 && mv 就被短路跳过了，
+	# 状态文件永远不落地 —— 而且不报任何错，最难查的那种。
+	# 拆成两段：先无条件写完，再单独判断。
+	{
+		echo "mode=$1"
+		echo "dev=$2"
+		echo "proto=$3"
+		echo "ts=$(date +%s)"
+		if [ -n "$failed" ]; then
+			echo "failed=$failed"
+		fi
+	} > "$STATE.tmp" || return 1
+	mv "$STATE.tmp" "$STATE"
+}
+
+# 某个模式刚试过而且不通 → 记下来跳过。
+# 不记的话会出事：万一某个模式切过去模组就卡住（连 AT 口都不回来），
+# 下次开机会再切一次、再卡一次 —— 永远好不了。
+state_mark_failed() {
+	local f
+	f="$(state_get failed)"
+	case " $f " in
+		*" $1 "*) return 0 ;;
+	esac
+	f="${f:+$f }$1"
+	state_set "$(state_get mode)" "$(state_get dev)" "$(state_get proto)" "$f"
+}
+
+# 失败记忆的有效期：超过 7 天清掉重试一次
+# （换了位置/刷了固件/换了卡，之前不通的现在可能就通了）
+state_expire_failed() {
+	local ts now
+	ts="$(state_get ts)"
+	[ -n "$ts" ] || return 0
+	now="$(date +%s)"
+	[ "$((now - ts))" -gt 604800 ] || return 0
+	log "上次探测记录已超过 7 天，清掉失败记忆重新试"
+	rm -f "$STATE"
+}
+
+apply_state() {
+	local mode dev proto
+	mode="$(state_get mode)"
+	dev="$(state_get dev)"
+	proto="$(state_get proto)"
+
+	[ -n "$mode" ] || return 1
+	[ -n "$dev" ] || return 1
+	[ -d "/sys/class/net/$dev" ] || return 1
+	[ -n "$proto" ] || proto="$(mode_proto "$mode")"
+
+	set_wan "$dev" "$proto"
+	return 0
+}
+
+# ================================================================ 主流程
+main() {
+	local cfg cur mode dev proto tries=0 ok="" failed f
+
+	state_expire_failed
+
+	cfg="$(uci -q get openfi_usbmode.usbmode.mode 2>/dev/null)"
+	cfg="${cfg:-auto}"
+
+	if [ "$cfg" = "off" ]; then
+		log "配置为 off，不探测，保持现状"
+		return 0
+	fi
+
+	cur="$(at_get_mode)"
+	log "当前模式: ${cur:-未知} $(mode_name "$cur")"
+
+	# 钉死某个模式
+	if [ "$cfg" != "auto" ]; then
+		case "$cfg" in *[!0-9]*) log "配置值不合法: $cfg"; return 1 ;; esac
+		if [ "$cur" != "$cfg" ]; then
+			log "按配置切到 $cfg"
+			at_set_mode "$cfg" || log "切换命令被拒"
+			wait_at_alive || log "AT 口没回来"
+		fi
+		dev="$(wait_iface "$(mode_driver "$cfg")")"
+		[ -n "$dev" ] || { log "找不到 $cfg 的网卡"; return 1; }
+		set_wan "$dev" "$(mode_proto "$cfg")"
+		state_set "$cfg" "$dev" "$(mode_proto "$cfg")"
+		return 0
+	fi
+
+	# 已经探明过、而且当前就是它 → 直接用，不再折腾（开机快）
+	if [ "$(state_get mode)" = "$cur" ] && apply_state; then
+		log "沿用上次探明的模式 $cur，跳过探测"
+		return 0
+	fi
+
+	failed="$(state_get failed)"
+	for mode in $CHAIN; do
+		[ "$tries" -lt "$MAX_TRIES" ] || { log "切换次数到上限，停止"; break; }
+		tries=$((tries + 1))
+
+		# 上次试过不通的跳过（否则可能每次开机都在同一个坏模式上卡住）
+		case " $failed " in
+			*" $mode "*)
+				log "跳过 $(mode_name "$mode")：上次探测失败过"
+				continue
+				;;
+		esac
+
+		# 驱动/工具缺失不算"这模式不行"（换固件可能就有），所以不记失败
+		if ! driver_present "$mode"; then
+			log "跳过 $(mode_name "$mode")：系统里没有 $(mode_driver "$mode") 驱动"
+			continue
+		fi
+		if ! tool_present "$mode"; then
+			log "跳过 $(mode_name "$mode")：缺用户态工具"
+			continue
+		fi
+
+		log "尝试 $(mode_name "$mode")"
+		if [ "$cur" != "$mode" ]; then
+			at_set_mode "$mode" || { log "$(mode_name "$mode") 切换命令被拒"; continue; }
+			wait_at_alive || { log "$(mode_name "$mode") 切换后 AT 口没回来"; continue; }
+		fi
+
+		dev="$(wait_iface "$(mode_driver "$mode")")"
+		if [ -z "$dev" ]; then
+			log "$(mode_name "$mode") 没等到网卡，记为失败"
+			state_mark_failed "$mode"
+			continue
+		fi
+
+		proto="$(mode_proto "$mode")"
+		set_wan "$dev" "$proto"
+
+		if verify_link "$dev"; then
+			log "$(mode_name "$mode") 成功：$dev（proto=$proto）"
+			state_set "$mode" "$dev" "$proto"
+			ok="$mode"
+			break
+		fi
+		log "$(mode_name "$mode") 网卡拉起来了但连不通，记为失败"
+		state_mark_failed "$mode"
+	done
+
+	if [ -z "$ok" ]; then
+		log "所有模式都没通，回到 RNDIS 兜底"
+		f="$(state_get failed | tr ' ' '\n' | grep -v '^3$' | tr '\n' ' ')"
+		rm -f "$STATE"
+		if [ "$(at_get_mode)" != "3" ]; then
+			at_set_mode 3
+			wait_at_alive
+		fi
+		dev="$(wait_iface rndis_host)"
+		[ -n "$dev" ] || dev="usb0"
+		set_wan "$dev" dhcp
+		state_set 3 "$dev" dhcp "$f"
+	fi
+
+	return 0
+}
+
+case "${1:-auto}" in
+auto) main ;;
+show)
+	if [ -f "$STATE" ]; then cat "$STATE"; else echo "还没探测过"; fi
+	;;
+reset)
+	rm -f "$STATE"
+	echo "已清除探测记录，下次开机会重新探测"
+	;;
+--library) : ;;
+*)
+	echo "用法: openfi-usbmode {auto|show|reset}" >&2
+	exit 1
+	;;
+esac

@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+#
+# openfi-usbmode —— 开机探测模组最佳的 USB 数据模式
+#
+# START=21：排在 network(20) 之后。
+#   必须有 netifd 才能用 ifup/ifdown 真把 WAN 拉起来验连通 ——
+#   光看"网卡出现了"不算数（没插卡/欠费/模组假死时网卡照样在，IP 也照样有）。
+#
+# 首次开机：可能要试 MBIM → NCM → RNDIS，每试一次 USB 都要重新枚举，
+#           全程最长一两分钟，属于正常（只发生一次）。
+# 之后开机：读 /etc/openfi_usbmode.state 里记下的赢家，直接套 uci，秒过。
+#
+START=21
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/sbin/openfi-usbmode auto
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn 0 0 0	# 一次性任务，跑完就退出，不要拉起
+	procd_close_instance
+}
