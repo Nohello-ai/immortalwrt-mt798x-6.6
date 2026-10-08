@@ -111,7 +111,14 @@ jobs:
           path: |
             staging_dir
             toolchain
-          key: staging-25.12-${{ runner.arch }}-${{ hashFiles('defconfig/openfi6c.config') }}
+          # 【提速关键】这里【故意不用】defconfig 的哈希做 key。
+          # 工具链和 staging_dir 只跟「内核版本 / 工具链版本 / feed 列表」有关，
+          # 跟「选了哪些包」没关系。之前把 defconfig 哈希写进 key，
+          # 导致每次动一下 defconfig（比如这次 argon→aurora）就缓存全失效、
+          # 白重建 10~15 分钟工具链。改成下面这几个真正相关的文件。
+          # 注意：staging_dir 里少东西是安全的 —— 每个包的 .built 标记在
+          # build_dir（不缓存）里，缺的包会自动重编并重新装进 staging_dir。
+          key: staging-25.12-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
           restore-keys: |
             staging-25.12-
 
@@ -124,8 +131,8 @@ jobs:
           echo "CCACHE_BASEDIR=${{ github.workspace }}" >> $GITHUB_ENV
           mkdir -p .ccache
 
-      - name: 缓存 ccache
-        uses: actions/cache@v4
+      - name: 恢复 ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-25.12-${{ github.sha }}
@@ -133,16 +140,25 @@ jobs:
             ccache-25.12-
 
       # ---------------- 构建 ----------------
-      - name: 加入 aurora 主题 feed
+      - name: 取 aurora 主题源码（放进 package/，不能挂 feed）
         run: |
           set -eu
-          # aurora 不在官方仓库里，挂成 feed 才能编进固件。
-          # 它的仓库根目录有 Makefile，可以直接当 feed 用（和 openfi6c-packages 一样）。
+          # 为什么不能挂成 feed（CI run #5 就是这么挂的，5 分钟就失败了）：
+          # OpenWrt 的 feed 扫描器（include/scan.mk）用的是
+          #   find -L $(SCAN_DIR) -mindepth 1 -maxdepth $(SCAN_DEPTH) -name Makefile
+          # 关键是 -mindepth 1 —— 它【不会】看 feed 仓库根目录下的 Makefile。
+          #   openfi6c-packages 能用 → 包在子目录里（luci-app-openfi-fan/Makefile，深度 1）
+          #   eamonxg/luci-theme-aurora 不能用 → Makefile 就在仓库根目录（深度 0）
+          # 结果：CONFIG_PACKAGE_luci-theme-aurora 变成未知符号，被 make defconfig 丢掉，
+          # 后面「应用配置」那步的断言直接把 CI 打红（这正是我们想要的：宁可红，不要静默出错固件）。
+          # 正确做法：clone 到 package/ 下当普通包用。
+          git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git package/luci-theme-aurora
+          echo "----- 包目录内容 -----"
+          ls package/luci-theme-aurora/
+          echo "----- 确认 PKG_NAME -----"
+          grep -E '^PKG_NAME' package/luci-theme-aurora/Makefile || { echo "::error::aurora 的 Makefile 里没有 PKG_NAME"; exit 1; }
           # 换掉 argon 的原因：argon 占 516KB + 6 个字体文件（手机侧约 180KB）；
-          # aurora 是 Vite + Tailwind 构建的，移动端适配更好、字体只有 1 个 23KB。
-          echo "src-git aurora https://github.com/eamonxg/luci-theme-aurora.git" >> feeds.conf.default
-          echo "----- feeds.conf.default -----"
-          cat feeds.conf.default
+          # aurora 是 Vite + Tailwind 构建的，移动端适配更好，字体只有 1 个 23KB。
 
       - name: 加入 openfi6c-packages feed（按开关）
         if: steps.opt.outputs.with_packages == 'true'
@@ -157,8 +173,6 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          echo "----- aurora feed 实际拉到的提交 -----"
-          git -C feeds/aurora log -1 --format='%H %ad %s' --date=short 2>/dev/null || true
           if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
             C=$(git -C feeds/openfi6c rev-parse --short HEAD 2>/dev/null || echo "?")
             echo "pkg_commit=$C" >> "$GITHUB_OUTPUT"
@@ -188,7 +202,7 @@ jobs:
             done
           fi
           echo "----- 断言 aurora 主题真的被选中 -----"
-          grep -q '^CONFIG_PACKAGE_luci-theme-aurora=y' .config || { echo "::error::luci-theme-aurora 没进 .config（aurora feed 没挂上或包名写错）"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-theme-aurora=y' .config || { echo "::error::luci-theme-aurora 没进 .config（package/luci-theme-aurora 没取到，或 make defconfig 把符号丢了）"; exit 1; }
           echo "OK: luci-theme-aurora=y"
           grep -q '^CONFIG_PACKAGE_luci-theme-argon=y' .config && { echo "::error::argon 还在 .config 里（应该已被 aurora 取代）"; exit 1; }
           echo "OK: argon 已移除"
@@ -221,6 +235,16 @@ jobs:
         run: |
           staging_dir/host/bin/ccache -s 2>/dev/null || ccache -s 2>/dev/null || echo "（首次构建，ccache 还没生成）"
           du -sh .ccache dl staging_dir 2>/dev/null || true
+
+      - name: 保存 ccache（即使编译失败也存）
+        # 【提速关键】默认的 actions/cache 只在 job 成功时才写缓存，
+        # 于是编译失败那一轮编的东西全白编了（而失败往往就发生在最后几个包）。
+        # 用 restore/save 分开 + if: always()，失败的轮次也能把 ccache 留下来给下次用。
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-25.12-${{ github.sha }}
 
       - name: 收集产物 + 生成 MD5
         if: success()
