@@ -223,7 +223,7 @@ jobs:
           echo "----- 关键配置确认 -----"
           grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE_openfi_6c=|CONFIG_PACKAGE_kmod-mt_wifi=|CONFIG_PACKAGE_kmod-warp=|CONFIG_PACKAGE_kmod-mediatek_hnat=|CONFIG_PACKAGE_mtwifi-cfg=' .config || true
           if [ "${{ steps.opt.outputs.with_packages }}" = "true" ]; then
-            echo "----- 断言两个 LuCI 包真的被选中 -----"
+            echo "----- 断言三个 LuCI 包真的被选中 -----"
             for s in luci-app-openfi-fan luci-app-openfi-modem luci-app-openfi-sms; do
               grep -q "^CONFIG_PACKAGE_${s}=y" .config || { echo "::error::${s} 没进 .config（feed 没挂上或包名写错）"; exit 1; }
               echo "OK: ${s}=y"
