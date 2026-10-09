@@ -33,10 +33,10 @@ eq "MBIM 要 proto mbim"  "$(mode_proto 2)" "mbim"
 eq "NCM 用 dhcp"         "$(mode_proto 5)" "dhcp"
 eq "RNDIS 用 dhcp"       "$(mode_proto 3)" "dhcp"
 
-# ── 探测顺序：必须是 NCM → RNDIS → ECM，且不含 QMI/RMNET
+# ── 探测顺序：必须是 NCM → RNDIS，且不含 QMI/RMNET
 #    故意不含 MBIM：它是"调制解调器"模型，要 umbim + 字符设备，
 #    还会让模组内部网络栈失效（后台进不去），实测收益只有 1.3ms。
-eq "探测顺序" "$CHAIN" "5 3 1"
+eq "探测顺序" "$CHAIN" "5 3"
 case "$CHAIN" in
 	*0*|*4*) bad "探测链里不该出现 RMNET(0)/QMI(4)" ;;
 	*)       ok "探测链里没有 RMNET/QMI（展锐平台不支持）" ;;
