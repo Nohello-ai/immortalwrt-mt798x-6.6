@@ -16,25 +16,22 @@ set -- --library
 . "$SRC"
 
 # ── 模式名
-eq "模式 2 = MBIM"   "$(mode_name 2)" "MBIM"
 eq "模式 5 = NCM"    "$(mode_name 5)" "NCM"
 eq "模式 3 = RNDIS"  "$(mode_name 3)" "RNDIS"
 eq "模式 0 = RMNET"  "$(mode_name 0)" "RMNET"
 eq "未知模式有兜底显示" "$(mode_name 9)" "未知(9)"
 
 # ── 驱动映射（找网卡靠它，不能错）
-eq "MBIM 用 cdc_mbim"    "$(mode_driver 2)" "cdc_mbim"
 eq "NCM 用 cdc_ncm"      "$(mode_driver 5)" "cdc_ncm"
 eq "RNDIS 用 rndis_host" "$(mode_driver 3)" "rndis_host"
 eq "ECM 用 cdc_ether"    "$(mode_driver 1)" "cdc_ether"
 
 # ── proto 映射（写错就上不了网）
-eq "MBIM 要 proto mbim"  "$(mode_proto 2)" "mbim"
 eq "NCM 用 dhcp"         "$(mode_proto 5)" "dhcp"
 eq "RNDIS 用 dhcp"       "$(mode_proto 3)" "dhcp"
 
 # ── 探测顺序：必须是 NCM → RNDIS，且不含 QMI/RMNET
-#    故意不含 MBIM：它是"调制解调器"模型，要 umbim + 字符设备，
+#    故意不含 MBIM：完整实现移到 mbim-archive 分支了。理由见脚本注释。
 #    还会让模组内部网络栈失效（后台进不去），实测收益只有 1.3ms。
 eq "探测顺序" "$CHAIN" "5 3"
 case "$CHAIN" in
@@ -54,17 +51,17 @@ eq "没状态文件时返回空" "$(state_get mode)" ""
 # ── 失败记忆（关键安全机制：防止反复卡在坏模式上）
 state_set 3 usb0 dhcp
 eq "初始没有失败记忆" "$(state_get failed)" ""
-state_mark_failed 2
-eq "记下失败模式 2" "$(state_get failed)" "2"
+state_mark_failed 1
+eq "记下失败模式 1" "$(state_get failed)" "1"
 state_mark_failed 5
-eq "再记失败模式 5" "$(state_get failed)" "2 5"
-state_mark_failed 2
-eq "重复记不叠加" "$(state_get failed)" "2 5"
+eq "再记失败模式 5" "$(state_get failed)" "1 5"
+state_mark_failed 1
+eq "重复记不叠加" "$(state_get failed)" "1 5"
 # 失败列表要能挡住跳过判断
 failed="$(state_get failed)"
 case " $failed " in
-	*" 2 "*) ok "模式 2 会被跳过（不再重试）" ;;
-	*)       bad "模式 2 没被挡住" ;;
+	*" 1 "*) ok "模式 1 会被跳过（不再重试）" ;;
+	*)       bad "模式 1 没被挡住" ;;
 esac
 case " $failed " in
 	*" 3 "*) bad "模式 3(RNDIS)不该在失败列表里" ;;

@@ -265,8 +265,8 @@ jobs:
           # 同时不卡住发版。
           # （上一版写成 ::error:: 直接 exit 1，把整个编译拦死，而日志里还看不出
           #   到底是哪个符号被 make defconfig 丢了。）
-          for k in kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim kmod-usb-net-cdc-ether \
-                   kmod-usb-net-rndis umbim; do
+          for k in kmod-usb-net-cdc-ncm kmod-usb-net-cdc-ether \
+                   kmod-usb-net-rndis; do
             if grep -q "^CONFIG_PACKAGE_${k}=y" .config; then
               echo "OK: ${k}=y"
             else
