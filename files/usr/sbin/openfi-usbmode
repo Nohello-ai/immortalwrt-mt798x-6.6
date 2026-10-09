@@ -254,14 +254,63 @@ wait_iface() {
 	return 1
 }
 
-set_wan() {
-	local dev="$1" proto="$2"
+# cdc_mbim 除了创建一个网卡，还会经 cdc-wdm 驱动暴露一个【控制通道字符设备】
+# /dev/cdc-wdmN。proto mbim 要的是【这个】，不是网卡名 ——
+# OpenWrt 的 /lib/netifd/proto/mbim.sh 里有 [ -c "$device" ] 检查，
+# 传网卡名（如 usb0/wwan0）会直接报
+#   "The specified control device does not exist"
+# 然后接口起不来。本机只有一个模组，取第一个存在的 cdc-wdm 即可。
+wait_cdc_wdm() {
+	local i=0 p
+	while [ "$i" -lt "$((REENUM_WAIT / 2))" ]; do
+		for p in /dev/cdc-wdm*; do
+			[ -c "$p" ] && { printf '%s' "$p"; return 0; }
+		done
+		sleep 2
+		i=$((i + 1))
+	done
+	return 1
+}
 
-	uci -q set network.wan.device="$dev"
+# 网卡名 → 该 proto 在 uci 里需要的 device 参数。
+# 其余 proto（dhcp/dhcpv6）要的就是网卡名，只有 mbim 特殊。
+proto_device() {	# $1=网卡名 $2=proto
+	case "$2" in
+		mbim) wait_cdc_wdm ;;
+		*)    printf '%s' "$1" ;;
+	esac
+}
+
+set_wan() {	# $1=网卡名 $2=proto
+	local dev="$1" proto="$2" devarg
+
+	# uci 里写的 device 和【网卡名】不一定是一回事：
+	# proto mbim 要 /dev/cdc-wdmN 这个字符设备，其余 proto 才是网卡名。
+	# 注意调用方（state 文件、verify_link 的 ping -I）用的始终是【网卡名】，
+	# 转换只发生在这里，避免两边对不上。
+	devarg="$(proto_device "$dev" "$proto")" || {
+		log "找不到 $proto 需要的设备节点（网卡 $dev）"
+		return 1
+	}
+
+	uci -q set network.wan.device="$devarg"
 	uci -q set network.wan.proto="$proto"
-	uci -q set network.wan6.device="$dev"
-	uci -q set network.wan6.proto='dhcpv6'
+
+	if [ "$proto" = "mbim" ]; then
+		# MBIM 的 IPv6 由 MBIM 会话自己协商（mbim.sh 看 option ipv6 决定要不要
+		# 请求 v6 PDP）。再挂一个 dhcpv6 的 wan6 只会空转刷日志，所以关掉它。
+		uci -q set network.wan.ipv6='1'
+		uci -q delete network.wan6.device
+		uci -q set network.wan6.proto='none'
+	else
+		# 普通网卡：IPv6 走标准 DHCPv6（模组内部有 RA/DHCPv6 服务器）
+		uci -q delete network.wan.ipv6
+		uci -q set network.wan6.device="$devarg"
+		uci -q set network.wan6.proto='dhcpv6'
+	fi
+
 	uci -q commit network
+	return 0
 }
 
 # 真拉起网络并验连通 —— 网卡出现不代表能上网
@@ -347,7 +396,9 @@ apply_state() {
 	[ -d "/sys/class/net/$dev" ] || return 1
 	[ -n "$proto" ] || proto="$(mode_proto "$mode")"
 
-	set_wan "$dev" "$proto"
+	# 【dev 存的是网卡名】，不是 uci 里那个 device，
+	# 所以上面按 /sys/class/net 判断存在性是成立的。
+	set_wan "$dev" "$proto" || return 1
 	return 0
 }
 
@@ -426,7 +477,11 @@ main() {
 		fi
 
 		proto="$(mode_proto "$mode")"
-		set_wan "$dev" "$proto"
+		if ! set_wan "$dev" "$proto"; then
+			log "$(mode_name "$mode") 配 wan 失败（找不到 $proto 需要的设备节点），记为失败"
+			state_mark_failed "$mode"
+			continue
+		fi
 
 		if verify_link "$dev"; then
 			log "$(mode_name "$mode") 成功：$dev（proto=$proto）"
