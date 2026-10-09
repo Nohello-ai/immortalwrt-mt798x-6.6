@@ -42,8 +42,12 @@ TAG=openfi-usbmode
 #   NCM/RNDIS 是"网卡"模型 —— proto dhcp 一行搞定，后台还在。
 #
 # 所以：NCM(5) 优先（协议比 RNDIS 干净，rx_errors 明显更少），
-#       RNDIS(3) 兜底（兼容性最好，实测能跑）
-CHAIN="5 3"
+#       RNDIS(3) 兜底（兼容性最好，实测能跑），
+#       ECM(1) 再兜一层 —— 换模组时最怕遇到"USB 只支持 ECM"的，
+#       驱动映射和 proto 映射本来就是现成的，加进链里零成本。
+#       （真例子：广和通 FM350-GL 的 USB 就只有 RNDIS，没有 NCM/ECM/MBIM，
+#         所以"通用协议"并不等于"每个模组都有"。）
+CHAIN="5 3 1"
 
 MAX_TRIES=6			# 每次开机最多切换几次
 REENUM_WAIT=60			# 等 USB 重新枚举 + AT 口复活的上限（秒）
