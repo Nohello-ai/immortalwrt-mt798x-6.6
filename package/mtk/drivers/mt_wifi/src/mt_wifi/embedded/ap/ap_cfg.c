@@ -11462,10 +11462,7 @@ INT RTMPAPQueryInformation(
 
 		MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 				 "Query:OID_802_11_SECURITY_TYPE\n");
-		if (os_alloc_mem(NULL, &pType, sizeof(*SecurityType)) == NDIS_STATUS_FAILURE || pType == NULL) {
-			Status = NDIS_STATUS_RESOURCES;
-			break;
-		}
+		os_alloc_mem(NULL, &pType, sizeof(*SecurityType));
 		SecurityType = (struct security_type *)pType;
 		pMbss = &pAd->ApCfg.MBSSID[ifIndex];
 		SecurityType->ifindex = ifIndex;

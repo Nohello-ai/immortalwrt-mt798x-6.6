@@ -9,7 +9,7 @@
  #ifdef CONFIG_DOT11V_WNM
  
  	case OID_802_11_WNM_IPV4_PROXY_ARP_LIST: {
-@@ -11457,19 +11457,37 @@ INT RTMPAPQueryInformation(
+@@ -11457,19 +11457,40 @@ INT RTMPAPQueryInformation(
  
  	case OID_802_11_SECURITY_TYPE: {
  		BSS_STRUCT *pMbss;
@@ -26,7 +26,11 @@
 +			return FALSE;
 +		}
 +
- 		os_alloc_mem(NULL, &pType, sizeof(*SecurityType));
+-		os_alloc_mem(NULL, &pType, sizeof(*SecurityType));
++		if (os_alloc_mem(NULL, &pType, sizeof(*SecurityType)) == NDIS_STATUS_FAILURE || pType == NULL) {
++			Status = NDIS_STATUS_RESOURCES;
++			break;
++		}
 -		SecurityType = (struct security_type *)pType;
 +		SecurityType = (struct security_type_new *)pType;
 +
