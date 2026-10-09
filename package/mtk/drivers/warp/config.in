@@ -23,13 +23,13 @@ config WED_HW_RRO_SUPPORT
 	bool "WED HW RRO Support"
 	default y
 
-config MTK_MEMORY_SHRINK
+config WARP_MEMORY_SHRINK
 	bool "Memory Shrink"
 	default n
 
 config WARP_MEMORY_LEAK_DBG
 	bool "Memory leak debug"
-	depends on !MTK_MEMORY_SHRINK && WARP_DBG_SUPPORT
+	depends on !WARP_MEMORY_SHRINK && WARP_DBG_SUPPORT
 	default y
 
 config WARP_CHIPSET

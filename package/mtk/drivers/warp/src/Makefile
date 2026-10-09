@@ -16,7 +16,7 @@ ifeq ($(CONFIG_WED_HW_RRO_SUPPORT), y)
 ccflags-y += -DCONFIG_WED_HW_RRO_SUPPORT
 endif
 
-ifeq ($(CONFIG_MTK_MEMORY_SHRINK), y)
+ifeq ($(CONFIG_WARP_MEMORY_SHRINK), y)
 ccflags-y += -DMEMORY_SHRINK
 endif
 

@@ -179,6 +179,9 @@ INT process_ecdh_element(
 	if ((ext_ie_ptr->ext_ie_id == 0) && (ext_ie_ptr->length == 0))
 		return MLME_SUCCESS;
 
+	if (ie_len < (1 + sizeof(peer_group)))
+		return MLME_UNSPECIFY_FAIL;
+
 	remain_len = ie_len - 1;/*the length which starts from group field directly.*/
 	pos = (UCHAR *)&ext_ie_ptr->group;/*start from group field directly.*/
 
@@ -207,6 +210,9 @@ INT process_ecdh_element(
 	/*if we cannot support the group, skip the further steps.*/
 	if (owe->last_try_group == 0)
 		return MLME_FINITE_CYCLIC_GROUP_NOT_SUPPORTED;
+
+	if (remain_len < sizeof(peer_group))
+		return MLME_UNSPECIFY_FAIL;
 
 	pos =  pos + sizeof(peer_group);
 	remain_len = remain_len - sizeof(peer_group);
@@ -500,17 +506,28 @@ BOOLEAN extract_pair_owe_bss_info(UCHAR *owe_vendor_ie,
 {
 	BOOLEAN ret = TRUE;
 	BOOLEAN has_band_ch_info = FALSE;
-	UCHAR local_ssid_len = *(owe_vendor_ie + MAC_ADDR_LEN);
 	UCHAR ssid_field_len = sizeof(UCHAR);
-	UCHAR at_least_length = local_ssid_len + MAC_ADDR_LEN + ssid_field_len;
+	UCHAR local_ssid_len;
+	UINT at_least_length;
 	UCHAR *pos = owe_vendor_ie;
 
-	/*Sanity check length information*/
-	if (owe_vendor_ie_len < (local_ssid_len + MAC_ADDR_LEN)) {
+	/* 先确认 IE 至少能放下 BSSID(MAC_ADDR_LEN) + SSID 长度字段；
+	 * 否则下面 *(owe_vendor_ie + MAC_ADDR_LEN) 就是越界读。 */
+	if (owe_vendor_ie_len < (MAC_ADDR_LEN + ssid_field_len)) {
 		ret = FALSE;
 		goto end;
-	} else if (owe_vendor_ie_len > at_least_length)
-		has_band_ch_info = TRUE;/*remain length */
+	}
+
+	local_ssid_len = *(owe_vendor_ie + MAC_ADDR_LEN);
+
+	/* at_least_length 用 UINT 避免 UCHAR 相加溢出；并确认 IE 真含 local_ssid_len 字节的 SSID */
+	at_least_length = (UINT)MAC_ADDR_LEN + ssid_field_len + local_ssid_len;
+	if (owe_vendor_ie_len < at_least_length) {
+		ret = FALSE;
+		goto end;
+	}
+
+	has_band_ch_info = (owe_vendor_ie_len > at_least_length);
 
 	NdisMoveMemory(pair_bssid, pos, MAC_ADDR_LEN);
 	pos = pos + MAC_ADDR_LEN + ssid_field_len;

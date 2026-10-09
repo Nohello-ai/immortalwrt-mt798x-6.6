@@ -1426,7 +1426,17 @@ static BOOLEAN PeerAssocReqCmmSanity
 				}
 				ie_lists->ecdh_ie.ext_ie_id = IE_WLAN_EXTENSION;
 				ie_lists->ecdh_ie.length = eid_ptr->Len;
-				NdisMoveMemory(&ie_lists->ecdh_ie.ext_id_ecdh, eid_ptr->Octet, eid_ptr->Len);
+				{
+					/* 目标区 = ext_id_ecdh(1)+group(2)+public_key[128] = 131B；eid_ptr->Len 是 UCHAR(<=255)，
+					 * 直接拷会越界写。按目标区上限截断。 */
+					UINT ecdh_copy_len = eid_ptr->Len;
+					UINT ecdh_dst_len = sizeof(ie_lists->ecdh_ie.public_key)
+						+ sizeof(ie_lists->ecdh_ie.group)
+						+ sizeof(ie_lists->ecdh_ie.ext_id_ecdh);
+					if (ecdh_copy_len > ecdh_dst_len)
+						ecdh_copy_len = ecdh_dst_len;
+					NdisMoveMemory(&ie_lists->ecdh_ie.ext_id_ecdh, eid_ptr->Octet, ecdh_copy_len);
+				}
 			}
 #endif /*CONFIG_OWE_SUPPORT*/
 				break;

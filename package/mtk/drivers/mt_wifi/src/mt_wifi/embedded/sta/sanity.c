@@ -419,7 +419,17 @@ BOOLEAN PeerAssocRspSanity(
 				}
 				ie_list->ecdh_ie.ext_ie_id = IE_WLAN_EXTENSION;
 				ie_list->ecdh_ie.length = pEid->Len;
-				NdisMoveMemory(&ie_list->ecdh_ie.ext_id_ecdh, pEid->Octet, pEid->Len);
+				{
+					/* 目标区 = ext_id_ecdh(1)+group(2)+public_key[128] = 131B；pEid->Len 是 UCHAR(<=255)，
+					 * 直接拷会越界写。按目标区上限截断。 */
+					UINT ecdh_copy_len = pEid->Len;
+					UINT ecdh_dst_len = sizeof(ie_list->ecdh_ie.public_key)
+						+ sizeof(ie_list->ecdh_ie.group)
+						+ sizeof(ie_list->ecdh_ie.ext_id_ecdh);
+					if (ecdh_copy_len > ecdh_dst_len)
+						ecdh_copy_len = ecdh_dst_len;
+					NdisMoveMemory(&ie_list->ecdh_ie.ext_id_ecdh, pEid->Octet, ecdh_copy_len);
+				}
 			}
 #endif /*CONFIG_OWE_SUPPORT*/
 				break;
