@@ -408,7 +408,15 @@ BOOLEAN PeerAssocRspSanity(
 #ifdef CONFIG_OWE_SUPPORT
 			{
 				UCHAR *ext_ie_length = (UCHAR *)pEid + 1;
-				os_zero_mem(ie_list->ecdh_ie.public_key, *ext_ie_length-3);
+				/* IE 的 Length 是 UCHAR，<3 时 *ext_ie_length-3 会无符号下溢成巨值 -> memset ~4GB -> oops。
+				 * 加长度校验并按目标缓冲区上限截断。 */
+				if (*ext_ie_length >= 3) {
+					UINT key_len = (UINT)(*ext_ie_length - 3);
+
+					if (key_len > sizeof(ie_list->ecdh_ie.public_key))
+						key_len = sizeof(ie_list->ecdh_ie.public_key);
+					os_zero_mem(ie_list->ecdh_ie.public_key, key_len);
+				}
 				ie_list->ecdh_ie.ext_ie_id = IE_WLAN_EXTENSION;
 				ie_list->ecdh_ie.length = pEid->Len;
 				NdisMoveMemory(&ie_list->ecdh_ie.ext_id_ecdh, pEid->Octet, pEid->Len);

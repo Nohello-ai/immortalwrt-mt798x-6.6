@@ -660,7 +660,7 @@ unsigned int do_hnat_ge_to_ext(struct sk_buff *skb, const char *func)
 	if (!dev) {
 		trace_printk("%s: called from %s. Get wifi interface fail\n",
 			     __func__, func);
-		return 0;
+		return -1;	/* 未接管: 返回 0 会让调用方 NF_STOLEN(丢了不发) */
 	}
 
 	skb->dev = dev;

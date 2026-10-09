@@ -1192,7 +1192,7 @@ wed_rx_budget_ring_init(
 
 	desc->alloc_size = res->rxd_len * res->ring_len;
 
-	if (warp_os_alloc_mem((u8 **)&res->desc[idx].alloc_va, desc->alloc_size, GFP_ATOMIC) < 0) {
+	if (warp_os_alloc_mem((u8 **)&res->desc[idx].alloc_va, desc->alloc_size, GFP_ATOMIC) != 0) {
 		warp_dbg(WARP_DBG_ERR, "%s(): allocate desc fail, len=%ld\n", __func__, desc->alloc_size);
 		ret = -1;
 		goto err;

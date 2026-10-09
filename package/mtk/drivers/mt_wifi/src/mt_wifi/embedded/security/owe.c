@@ -28,8 +28,13 @@ static UINT owe_process_peer_pubkey(OWE_INFO *owe, UCHAR *peer_pub_key, UCHAR pu
 
 	SAE_BN_COPY(peer_pubkey_bn, &peer_pub_point->x);
 
-	while (peer_pub_point->y == NULL)
-		ecc_point_find_by_x(ec_group_bi, peer_pub_point->x, &peer_pub_point->y, TRUE);
+	/* 不能让 while 死循环: x 不是二次剩余时 ecc_point_find_by_x 返回 FALSE 且不设 y, */
+	/* 原来的 while 会永远空转 -> 看门狗复位。改为检查返回值。 */
+	if (ecc_point_find_by_x(ec_group_bi, peer_pub_point->x, &peer_pub_point->y, TRUE) == FALSE) {
+		MTWF_DBG(NULL, DBG_CAT_SEC, CATSEC_OWE, DBG_LVL_ERROR,
+			"peer pub key x is not on curve");
+		goto err;
+	}
 
 	if (ecc_point_is_on_curve(ec_group_bi, peer_pub_point) == FALSE) {
 		MTWF_DBG(NULL, DBG_CAT_SEC, CATSEC_OWE, DBG_LVL_ERROR, "point is not on curve\n");
@@ -43,6 +48,9 @@ static UINT owe_process_peer_pubkey(OWE_INFO *owe, UCHAR *peer_pub_key, UCHAR pu
 err:
 	if (peer_pubkey_bn)
 		SAE_BN_FREE(&peer_pubkey_bn);
+
+	if (ret == 0 && peer_pub_point)
+		ecc_point_free(&peer_pub_point);
 
 	return ret;
 }
