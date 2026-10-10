@@ -12963,10 +12963,7 @@ case OID_GET_SECURITY_TYPE:
 		BSS_STRUCT *pMbss;
 		PUCHAR pType;
 		struct security_type *SecurityType;
-		if (os_alloc_mem(NULL, &pType, sizeof(*SecurityType)) == NDIS_STATUS_FAILURE || pType == NULL) {
-			Status = NDIS_STATUS_RESOURCES;
-			break;
-		}
+		os_alloc_mem(NULL, &pType, sizeof(*SecurityType));
 		SecurityType = (struct security_type *)pType;
 		pMbss = &pAd->ApCfg.MBSSID[ifIndex];
 		SecurityType->ifindex = ifIndex;

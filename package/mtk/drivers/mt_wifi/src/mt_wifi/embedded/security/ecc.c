@@ -97,8 +97,6 @@ EC_GROUP_INFO_BI *get_ecc_group_info_bi(
 			SAE_BN_BIN2BI((UINT8 *)gy, gy_len, &ec_group_bi->gy);
 
 			ecc_point_init(&ec_group_bi->generator);
-			if (ec_group_bi->generator == NULL)
-				return NULL;	/* 分配失败: 不要接着解引用 */
 			SAE_BN_COPY(ec_group_bi->gx, &ec_group_bi->generator->x);
 			SAE_BN_COPY(ec_group_bi->gy, &ec_group_bi->generator->y);
 			SAE_ECC_SET_Z_TO_1(ec_group_bi->generator);
@@ -219,8 +217,7 @@ VOID ecc_point_init(
 		os_alloc_mem(NULL, (UCHAR **)ec_point_res, sizeof(BIG_INTEGER_EC_POINT));
 
 		if (*ec_point_res == NULL) {
-			MTWF_DBG(NULL, DBG_CAT_SEC, CATSEC_ECC, DBG_LVL_ERROR,
-				"ecc_point_init alloc fail\n");
+			panic("ecc_point_init alloc fail\n");
 			return;
 		}
 
@@ -256,8 +253,7 @@ VOID ecc_point_copy(
 		ecc_point_init(ec_point_res);
 
 		if (*ec_point_res == NULL) {
-			MTWF_DBG(NULL, DBG_CAT_SEC, CATSEC_ECC, DBG_LVL_ERROR,
-				"ecc_point_init alloc fail\n");
+			panic("ecc_point_init alloc fail\n");
 			return;
 		}
 	}
@@ -1353,10 +1349,6 @@ UCHAR asn1_get_pub_key_from_sub_pub_key_info(
 	}
 
 	ecc_point_init(pub_key);
-	if (*pub_key == NULL) {
-		fail_reason = 9;
-		goto Fail;
-	}
 	SAE_BN_BIN2BI(asn1 + c_idx + 2, ec_group_bi->ec_group->prime_len, &((*pub_key)->x));
 
 	ecc_point_find_by_x(ec_group_bi, (*pub_key)->x, &((*pub_key)->y), TRUE);

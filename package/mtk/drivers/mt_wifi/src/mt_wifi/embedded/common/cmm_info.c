@@ -6397,9 +6397,9 @@ VOID RTMPCommSiteSurveyData(
 	}
 	/*Security*/
 	RTMPZeroMemory(SecurityStr, 32);
-	/* SecurityStr 是 32 字节固定缓冲: 必须 sizeof(SecurityStr), 不能拿 msg 的剩余空间当写上限 */
-	ret = snprintf(SecurityStr, sizeof(SecurityStr), "%s/%s", GetAuthModeStr(pBss->AKMMap), GetEncryModeStr(pBss->PairwiseCipher));
-	if (os_snprintf_error(sizeof(SecurityStr), ret)) {
+	LeftBufSize = MsgLen - strlen(msg);
+	ret = snprintf(SecurityStr, LeftBufSize, "%s/%s", GetAuthModeStr(pBss->AKMMap), GetEncryModeStr(pBss->PairwiseCipher));
+	if (os_snprintf_error(LeftBufSize, ret)) {
 		MTWF_DBG(NULL, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "Snprintf failed!\n");
 		return;
 	}

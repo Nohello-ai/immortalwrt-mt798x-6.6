@@ -2639,8 +2639,6 @@ static BIG_INTEGER_EC_POINT *sswu(
 	BIG_INTEGER_EC_POINT *res = NULL;
 
 	ecc_point_init(&res);
-	if (res == NULL)
-		return NULL;
 
 	/* m = z^2 * u^4 + z * u^2 = (z * u ^ 2) ^ 2 + (z * u ^ 2) */
 	SAE_BN_MOD_SQR(u, ec_group_bi->prime, &u2);
@@ -4309,10 +4307,6 @@ USHORT sae_parse_commit_element_ecc(
 	  * element validation succeeds.
 	  */
 	ecc_point_init(&peer_element);
-	if (peer_element == NULL) {
-		res = MLME_UNSPECIFY_FAIL;
-		goto fail;
-	}
 	SAE_BN_COPY(peer_element_x, &peer_element->x);
 	SAE_BN_COPY(peer_element_y, &peer_element->y);
 	SAE_ECC_SET_Z_TO_1(peer_element);

@@ -408,28 +408,10 @@ BOOLEAN PeerAssocRspSanity(
 #ifdef CONFIG_OWE_SUPPORT
 			{
 				UCHAR *ext_ie_length = (UCHAR *)pEid + 1;
-				/* IE 的 Length 是 UCHAR，<3 时 *ext_ie_length-3 会无符号下溢成巨值 -> memset ~4GB -> oops。
-				 * 加长度校验并按目标缓冲区上限截断。 */
-				if (*ext_ie_length >= 3) {
-					UINT key_len = (UINT)(*ext_ie_length - 3);
-
-					if (key_len > sizeof(ie_list->ecdh_ie.public_key))
-						key_len = sizeof(ie_list->ecdh_ie.public_key);
-					os_zero_mem(ie_list->ecdh_ie.public_key, key_len);
-				}
+				os_zero_mem(ie_list->ecdh_ie.public_key, *ext_ie_length-3);
 				ie_list->ecdh_ie.ext_ie_id = IE_WLAN_EXTENSION;
 				ie_list->ecdh_ie.length = pEid->Len;
-				{
-					/* 目标区 = ext_id_ecdh(1)+group(2)+public_key[128] = 131B；pEid->Len 是 UCHAR(<=255)，
-					 * 直接拷会越界写。按目标区上限截断。 */
-					UINT ecdh_copy_len = pEid->Len;
-					UINT ecdh_dst_len = sizeof(ie_list->ecdh_ie.public_key)
-						+ sizeof(ie_list->ecdh_ie.group)
-						+ sizeof(ie_list->ecdh_ie.ext_id_ecdh);
-					if (ecdh_copy_len > ecdh_dst_len)
-						ecdh_copy_len = ecdh_dst_len;
-					NdisMoveMemory(&ie_list->ecdh_ie.ext_id_ecdh, pEid->Octet, ecdh_copy_len);
-				}
+				NdisMoveMemory(&ie_list->ecdh_ie.ext_id_ecdh, pEid->Octet, pEid->Len);
 			}
 #endif /*CONFIG_OWE_SUPPORT*/
 				break;
