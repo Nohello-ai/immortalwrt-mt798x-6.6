@@ -22,6 +22,8 @@ static UINT owe_process_peer_pubkey(OWE_INFO *owe, UCHAR *peer_pub_key, UCHAR pu
 		ecc_point_free((BIG_INTEGER_EC_POINT **)&owe->peer_pub_key);
 
 	ecc_point_init(&peer_pub_point);
+	if (peer_pub_point == NULL)
+		goto err;
 	SAE_BN_BIN2BI((UINT8 *)peer_pub_key,
 				pubkey_len,
 				&peer_pubkey_bn);
